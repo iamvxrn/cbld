@@ -1,0 +1,25 @@
+[package]
+name = "cbld"
+version = "0.9.0"
+edition = "2021"
+authors = ["iamvxrn"]
+description = """A modern build system for C and C++, with strict
+project-layout enforcement and Clang integration."""
+license = "MIT"
+repository = "https://github.com/iamvxrn/cbld"
+
+[[bin]]
+name = "cbld"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
