@@ -26,6 +26,13 @@ pub struct Cli {
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
+    /// Emit machine-readable JSON instead of human-readable text.
+    ///
+    /// Honored by `build` and `doctor`; other commands accept the flag (it's
+    /// global) but currently ignore it.
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Command,
@@ -34,8 +41,21 @@ pub struct Cli {
 /// All top-level subcommands cbld understands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Compile the current package.
+    /// Compile the current package and all of its dependencies.
     Build(BuildArgs),
+    /// Build (if needed) and then run the resulting executable.
+    Run(RunArgs),
+    /// Create a new cbld package in the given directory (or current dir).
+    Init(InitArgs),
+    /// Re-resolve project dependencies and rewrite cbld.lock.
+    ///
+    /// Touches only the current project's dependency graph: cache checkouts
+    /// under `~/.cbld/cache` and `cbld.lock`. Never touches the package index
+    /// (`~/.cbld/cbld-libs`) — see `Sync` for that.
+    Update(UpdateArgs),
+    /// Run Clang's static analyzer over the package's sources without
+    /// compiling to an object file or invoking the linker.
+    Check(CheckArgs),
 }
 
 /// Arguments for `completions`.
@@ -65,6 +85,40 @@ pub struct BuildArgs {
     #[arg(long, value_name = "DIR")]
     pub manifest_path: Option<PathBuf>,
 
+    /// Comma-separated list of features to activate.
+    #[arg(long, value_name = "FEATURES", value_delimiter = ',')]
+    pub features: Vec<String>,
+
+    /// Do not activate the `default` feature set.
+    #[arg(long)]
+    pub no_default_features: bool,
+
+    /// Profile compilation with Clang's `-ftime-trace` and aggregate the
+    /// result into `target/<profile>/cbld_profile.json` (loadable at
+    /// chrome://tracing or speedscope.app), printing the slowest headers
+    /// and template instantiations to the terminal.
+    #[arg(long)]
+    pub trace: bool,
+
+    /// Cross-compile for a different target triple (e.g.
+    /// `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`), passed to clang
+    /// as `--target=<triple>` during both compilation and linking. Overrides
+    /// the `[package] target` manifest field when both are set.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+
+    /// Scan this directory for sources instead of the manifest's
+    /// `[package] source_dir` (which itself defaults to `src`). Legacy escape
+    /// hatch: build a tree whose sources don't live under `src/` without
+    /// editing the manifest. Overrides `source_dir` when both are set.
+    #[arg(long, value_name = "PATH")]
+    pub from: Option<PathBuf>,
+
+    /// Suppress all compiler warnings by injecting `-w`. Turns warnings off
+    /// regardless of the `[package] ignore_warnings` manifest field — a blunt
+    /// tool for building noisy legacy code you don't own.
+    #[arg(long)]
+    pub ignore_warnings: bool,
 }
 
 /// Arguments for `cbld check`.
@@ -80,6 +134,14 @@ pub struct CheckArgs {
     /// Number of parallel analysis jobs. Defaults to the number of CPUs.
     #[arg(short = 'j', long = "jobs", value_name = "N")]
     pub jobs: Option<usize>,
+
+    /// Comma-separated list of features to activate.
+    #[arg(long, value_name = "FEATURES", value_delimiter = ',')]
+    pub features: Vec<String>,
+
+    /// Do not activate the `default` feature set.
+    #[arg(long)]
+    pub no_default_features: bool,
 
     /// Analyze as if cross-compiling for this target triple, passed to
     /// clang as `--target=<triple>`. Overrides the `[package] target`
