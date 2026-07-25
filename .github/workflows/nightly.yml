@@ -1,0 +1,25 @@
+name: Nightly Cross-Platform CI
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Diagnostic Verification
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Test Suite
+        run: cargo test 
+      - name: Build Binary
+        run: cargo build 
+      - name: Run E2E CLI Diagnostics
+        run: |
+          cargo run  -- doctor --json
+          cargo run  -- completions zsh
