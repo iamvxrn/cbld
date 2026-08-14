@@ -18,7 +18,9 @@ use std::time::Instant;
 use crate::compdb::CompileCommandEntry;
 use crate::compiler::{CompileUnit, Compiler, Language, LinkCommand};
 use crate::error::{CompileDiagnostic, CbldError, IoPathExt, Result};
+use crate::hash;
 use crate::manifest::{Manifest, Package};
+use crate::resolver;
 use crate::trace;
 
 /// What kind of artifact a package produces. Normally decided by which entry
@@ -429,6 +431,39 @@ impl Engine {
             })
             .collect();
 
+        // --- Global cache short-circuit ---------------------------------
+        // Before spinning up the compile thread-pool, see whether a
+        // byte-identical build (same sources, same flags, same target) has
+        // already been cached globally under ~/.cbld/cache/prebuilt/{hash}.
+        let cache_key = if layout.crate_kind == Crate::Library {
+            let fingerprint = compiler.cache_fingerprint(layout.entry_language)?;
+            Some(hash::package_key(&sources, &fingerprint)?)
+        } else {
+            None
+        };
+
+        if let Some(key) = &cache_key {
+            if let Ok(home) = resolver::cbld_home() {
+                if let Some(cached) = hash::lookup(&home, key, &package.name) {
+                    if let Some(parent) = artifact.parent() {
+                        fs::create_dir_all(parent).path_ctx(parent)?;
+                    }
+                    fs::copy(&cached, &artifact).path_ctx(&artifact)?;
+                    if !self.quiet {
+                        println!(
+                            "\x1b[1;32m  Cache hit\x1b[0m {} v{} [{}]",
+                            package.name, package.version, key
+                        );
+                    }
+                    return Ok(BuiltArtifact {
+                        path: artifact,
+                        cache_hit: true,
+                        compile_commands,
+                    });
+                }
+            }
+        }
+
         // Now that we know we're actually compiling, create each object
         // file's parent directory (skipped entirely on the cache hit above).
         for unit in &units {
@@ -489,6 +524,15 @@ impl Engine {
                     "unoptimized + debuginfo"
                 }
             );
+        }
+
+        // Populate the global cache for next time. Best-effort: a cache
+        // write failure (e.g. an unwritable ~/.cbld) must never fail an
+        // otherwise-successful build.
+        if let Some(key) = &cache_key {
+            if let Ok(home) = resolver::cbld_home() {
+                let _ = hash::store(&home, key, &package.name, &artifact);
+            }
         }
 
         Ok(BuiltArtifact {
