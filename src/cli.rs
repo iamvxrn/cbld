@@ -43,19 +43,46 @@ pub struct Cli {
 pub enum Command {
     /// Compile the current package and all of its dependencies.
     Build(BuildArgs),
+
     /// Build (if needed) and then run the resulting executable.
     Run(RunArgs),
+
     /// Create a new cbld package in the given directory (or current dir).
     Init(InitArgs),
+
     /// Re-resolve project dependencies and rewrite cbld.lock.
     ///
     /// Touches only the current project's dependency graph: cache checkouts
     /// under `~/.cbld/cache` and `cbld.lock`. Never touches the package index
     /// (`~/.cbld/cbld-libs`) — see `Sync` for that.
     Update(UpdateArgs),
+
+    /// Diagnose the local toolchain and environment (clang, ar, headers, ...).
+    Doctor,
+
+    /// Refresh the local package index (~/.cbld/cbld-libs) from the registry.
+    ///
+    /// Touches only that one flat-text index file via native OS fetch tools.
+    /// Never resolves dependencies, never touches a project's `cbld.lock` —
+    /// see `Update` for that.
+    Sync,
+
+    /// Generate a starter cbld.toml from an existing build system's config.
+    Migrate(MigrateArgs),
+
+    /// Vendor every dependency in cbld.lock into a local third_party/ tree.
+    ///
+    /// Once third_party/ is populated, subsequent `cbld build` runs resolve
+    /// dependencies entirely from those local copies — no git, no network,
+    /// no global cache lookups.
+    Vendor(VendorArgs),
+
     /// Run Clang's static analyzer over the package's sources without
     /// compiling to an object file or invoking the linker.
     Check(CheckArgs),
+
+    /// Generate shell completion scripts for the specified shell.
+    Completions(CompletionsArgs),
 }
 
 /// Arguments for `completions`.

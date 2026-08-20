@@ -7,11 +7,14 @@
 mod cli;
 mod compdb;
 mod compiler;
+mod doctor;
 mod engine;
 mod error;
 mod glob;
+mod hash;
 mod json;
 mod manifest;
+mod migrate;
 mod resolver;
 mod trace;
 
@@ -19,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use cli::{BuildArgs, CheckArgs, Cli, Command as Cmd, InitArgs, RunArgs, UpdateArgs};
+use cli::{BuildArgs, CheckArgs, Cli, Command as Cmd, InitArgs, RunArgs, UpdateArgs, VendorArgs};
 use compiler::Compiler;
 use engine::{default_jobs, require_package, Crate, Engine, Layout, ScanConfig};
 use error::{CbldError, IoPathExt, Result};
@@ -38,7 +41,17 @@ fn main() {
         Cmd::Run(args) => cmd_run(args, verbose, quiet),
         Cmd::Init(args) => cmd_init(args, quiet),
         Cmd::Update(args) => cmd_update(args, verbose, quiet),
+        Cmd::Doctor => doctor::run(verbose, json),
+        Cmd::Sync => cmd_sync(verbose, quiet),
+        Cmd::Migrate(args) => migrate::run(&args, quiet),
+        Cmd::Vendor(args) => cmd_vendor(args, verbose, quiet),
         Cmd::Check(args) => cmd_check(args, verbose, quiet),
+        Cmd::Completions(args) => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(args.shell, &mut cmd, "cbld", &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     if let Err(err) = result {
@@ -68,8 +81,22 @@ struct BuildOutcome {
 }
 
 /// Top-level `cbld build` entry point.
-fn cmd_build_top_level(args: BuildArgs, verbose: bool, quiet: bool, _json: bool) -> Result<()> {
-    build_with_diagnostics(args, verbose, quiet, false).map(|_| ())
+fn cmd_build_top_level(args: BuildArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    if !json {
+        return build_with_diagnostics(args, verbose, quiet, json).map(|_| ());
+    }
+
+    let started = Instant::now();
+    let result = build_with_diagnostics(args, verbose, true, true);
+    let duration_ms = started.elapsed().as_millis() as i64;
+
+    let payload = match &result {
+        Ok(outcome) => build_success_payload(outcome, duration_ms),
+        Err(err) => build_failure_payload(err, duration_ms),
+    };
+    println!("{}", payload.render());
+
+    result.map(|_| ())
 }
 
 /// `{"status":"success","duration_ms":N,"cache_hits":N,"artifact":"...","errors":[]}`
@@ -125,13 +152,31 @@ fn build_failure_payload(err: &CbldError, duration_ms: i64) -> Json {
     ])
 }
 
+/// Run the (intentionally bare) build, and only pay for environment
+/// diagnostics if it actually failed. A successful build never spawns a
+/// single extra process beyond what compiling/linking already required —
+/// that's what keeps the hot path at `cbld build`'s target of a near-instant
+/// invocation. Shared by `cbld build` and `cbld run`, since the latter is
+/// just a build with an extra step.
 fn build_with_diagnostics(
     args: BuildArgs,
     verbose: bool,
     quiet: bool,
     json: bool,
 ) -> Result<BuildOutcome> {
-    cmd_build(args, verbose, quiet, json)
+    match cmd_build(args, verbose, quiet, json) {
+        Ok(outcome) => Ok(outcome),
+        Err(err) => {
+            if !quiet && !json {
+                eprintln!(
+                    "\n\x1b[1;33mnote\x1b[0m: build failed — running `cbld doctor` diagnostics...\n"
+                );
+                let _ = doctor::run(verbose, false);
+                eprintln!();
+            }
+            Err(err)
+        }
+    }
 }
 
 /// `cbld sync` — refresh `~/.cbld/cbld-libs` from the registry.
@@ -139,6 +184,11 @@ fn build_with_diagnostics(
 /// Strictly an index refresh: no manifest is loaded, no dependency is
 /// resolved, and `cbld.lock` is never touched. Use `cbld update` to
 /// re-resolve a project's dependencies instead.
+fn cmd_sync(verbose: bool, quiet: bool) -> Result<()> {
+    let resolver = Resolver::new(verbose)?;
+    resolver.sync_index(quiet)
+}
+
 /// `cbld build`
 fn cmd_build(args: BuildArgs, verbose: bool, quiet: bool, json: bool) -> Result<BuildOutcome> {
     let root = project_root(args.manifest_path.as_deref())?;
@@ -586,6 +636,46 @@ fn cmd_update(args: UpdateArgs, verbose: bool, quiet: bool) -> Result<()> {
 /// re-resolves a dependency to a different commit than what's locked — it
 /// only relocates already-resolved sources from the global cache into the
 /// project itself.
+fn cmd_vendor(args: VendorArgs, verbose: bool, quiet: bool) -> Result<()> {
+    let root = project_root(args.manifest_path.as_deref())?;
+    let manifest = Manifest::load(&root)?;
+    let lock = Lockfile::load(&root)?.ok_or_else(|| {
+        CbldError::Config("no cbld.lock found; run `cbld build` or `cbld update` first".into())
+    })?;
+
+    let resolver = Resolver::new(verbose)?;
+    let resolved = resolver.resolve_all(&manifest, Some(&lock))?;
+
+    let vendor_dir = root.join("third_party");
+    std::fs::create_dir_all(&vendor_dir).path_ctx(&vendor_dir)?;
+
+    for dep in &resolved {
+        let dest = vendor_dir.join(&dep.name);
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest).path_ctx(&dest)?;
+        }
+        copy_tree_excluding_git(&dep.cache_path, &dest)?;
+        if !quiet {
+            println!(
+                "\x1b[1;32m    Vendored\x1b[0m {} v{} -> {}",
+                dep.name,
+                dep.version,
+                dest.display()
+            );
+        }
+    }
+
+    if !quiet {
+        println!(
+            "\x1b[1;32m   Finished\x1b[0m vendoring {} dependenc{} into {}",
+            resolved.len(),
+            if resolved.len() == 1 { "y" } else { "ies" },
+            vendor_dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// Recursively copy a directory tree, skipping any `.git` directory — the
 /// vendored copy is a source snapshot, not a git checkout.
 fn copy_tree_excluding_git(src: &Path, dst: &Path) -> Result<()> {
