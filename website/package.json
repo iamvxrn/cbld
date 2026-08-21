@@ -1,0 +1,1 @@
+{"name":"cbld-docs","private":true,"type":"module","scripts":{"dev":"vitepress dev docs","build":"vitepress build docs","docs:dev":"vitepress dev docs","docs:build":"vitepress build docs","docs:preview":"vitepress preview docs"},"devDependencies":{"vitepress":"^1.6.4","vue":"^3.5.41"}}
