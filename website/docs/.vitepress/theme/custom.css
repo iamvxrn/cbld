@@ -1,0 +1,79 @@
+:root {
+  --vp-c-brand-1: #10b981;
+  --vp-c-brand-2: #059669;
+  --vp-c-brand-3: #047857;
+  --vp-c-brand-soft: rgba(16, 185, 129, 0.14);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #34d399, #10b981);
+
+  --brand-glow: rgba(16, 185, 129, 0.35);
+}
+
+/* premium cool graphite neutrals */
+.dark {
+  --vp-c-bg: #0f1211;
+  --vp-c-bg-alt: #0a0d0c;
+  --vp-c-bg-soft: #171b19;
+  --vp-c-bg-elv: #141816;
+
+  --vp-c-gray-1: #232926;
+  --vp-c-gray-2: #1c211f;
+  --vp-c-gray-3: #171b19;
+  --vp-c-gray-soft: rgba(160, 230, 200, 0.08);
+
+  --vp-c-divider: #232926;
+  --vp-c-border: #2c332f;
+  --vp-c-gutter: #080b0a;
+
+  --vp-c-text-1: #eaefec;
+  --vp-c-text-2: #a9b3ad;
+  --vp-c-text-3: #6f7a74;
+}
+
+/* a touch of neon on the hero name */
+.VPHero .name {
+  filter: drop-shadow(0 0 18px var(--brand-glow));
+}
+
+/* glass navbar */
+.VPNavBar {
+  backdrop-filter: saturate(160%) blur(12px);
+}
+.dark .VPNavBar {
+  background-color: rgba(15, 18, 17, 0.6) !important;
+}
+html:not(.dark) .VPNavBar {
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* gradient + soft neon on brand buttons */
+.VPButton.brand {
+  background: linear-gradient(120deg, var(--vp-c-brand-1), var(--vp-c-brand-2));
+  border: none;
+  box-shadow: 0 0 0 1px var(--brand-glow), 0 6px 20px -8px var(--brand-glow);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+.VPButton.brand:hover {
+  box-shadow: 0 0 22px -2px var(--brand-glow), 0 8px 26px -8px var(--brand-glow);
+  transform: translateY(-1px);
+}
+
+/* glass feature cards */
+.VPFeature {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.VPFeature:hover {
+  border-color: var(--brand-glow);
+  box-shadow: 0 0 24px -10px var(--brand-glow);
+}
+
+/* faint glow on code blocks */
+.vp-doc div[class*="language-"] {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 24px -14px var(--brand-glow);
+}
