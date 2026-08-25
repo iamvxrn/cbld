@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0] - 2026-08-25
+
+Package index sync, migrations, diagnostics, and documentation site.
+
+- `sync`, `migrate`, `vendor`, `doctor`, and shell completions
+- Global build cache, sanitizer flags, and `--json` build output
+- VitePress documentation site and honest CLI/manifest docs
+
 ## [0.2.0] - 2026-07-28
 
 CLI expansion, dependency resolution, and release tooling.

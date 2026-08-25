@@ -1,1 +1,18 @@
-{"name":"cbld-docs","private":true,"type":"module","scripts":{"dev":"vitepress dev docs","build":"vitepress build docs","docs:dev":"vitepress dev docs","docs:build":"vitepress build docs","docs:preview":"vitepress preview docs"},"devDependencies":{"vitepress":"^1.6.4","vue":"^3.5.41"}}
+{
+  "name": "cbld-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev docs",
+    "build": "vitepress build docs",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "predev": "cp ../install.sh ../install.ps1 docs/public/",
+    "prebuild": "cp ../install.sh ../install.ps1 docs/public/"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.41"
+  }
+}
