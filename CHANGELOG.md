@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] - 2026-08-26
+
+Correctness and docs: the 0.3.0 graph, installers, and site had drifted.
+
+- Resolve and build transitive `cbld.toml` dependencies; pass `{ features }` into the dep being compiled
+- `cbld sync` still requires `CBLD_LIBS_URL` (no default registry)
+- Windows locates `~/.cbld` via `USERPROFILE` when `HOME` is unset
+- `cbld doctor` accepts `llvm-ar` / `lib.exe`, not only GNU `ar`
+- `cbld migrate` writes `[package] include_dirs` instead of profile `extra_flags`
+- Install fallback tags aligned to `v0.3.1`; Linux aarch64 release asset; `uninstall.ps1`
+- Docs match `cbld.toml` / CLI (workspace, features-as-defines, architecture page)
+
 ## [0.3.0] - 2026-08-25
 
 Package index sync, migrations, diagnostics, and documentation site.
