@@ -7,12 +7,12 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// cbld — a modern package manager and build system for C and C++.
+/// cbld — a build system for C and C++.
 #[derive(Parser, Debug)]
 #[command(
     name = "cbld",
     version,
-    about = "A modern package manager and build system for C and C++.",
+    about = "A build system for C and C++.",
     long_about = "cbld is a build system for C and C++ with strict \
                   project layout, Clang integration, and reproducible builds.",
     propagate_version = true

@@ -4,7 +4,7 @@
 //! cbld already declares `serde` for the manifest/lockfile data model, but
 //! pulling in `serde_json` just to emit a handful of flat CI-facing payloads
 //! would needlessly grow the dependency footprint (see
-//! docs/guides/architecture.md). This covers exactly the closed set of
+//! website/docs/architecture.md). This covers exactly the closed set of
 //! shapes cbld needs: objects, arrays, strings, numbers, bools, and null —
 //! enough to both write `cbld build --json` / `cbld doctor --json` /
 //! `compile_commands.json`, and to read back Clang's `-ftime-trace` output

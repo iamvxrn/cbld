@@ -4,7 +4,7 @@
 //! Hashing uses `std::hash::Hasher` (`DefaultHasher`, a SipHash variant) over
 //! source content/mtimes, the resolved compiler flag fingerprint, and the
 //! target OS/arch — no extra crate, matching cbld's zero-dependency
-//! footprint (see docs/guides/architecture.md).
+//! footprint (see website/docs/architecture.md).
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;

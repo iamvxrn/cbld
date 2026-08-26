@@ -1194,8 +1194,7 @@ mod tests {
 
     /// `--target=<triple>` must be injected into both compile phases, and
     /// must be absent entirely when no target was configured — the default,
-    /// native-build case must stay byte-for-byte unchanged from pre-0.5.0
-    /// behavior.
+    /// native-build case must stay byte-for-byte unchanged when unset.
     #[test]
     fn target_flag_injects_into_compile_args_only_when_set() {
         assert!(!compiler()

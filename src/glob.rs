@@ -1,5 +1,5 @@
 //! A tiny, dependency-free glob matcher for the source scanner's
-//! `include`/`exclude` patterns (0.7.0 legacy support).
+//! `include`/`exclude` glob matching for `[package]` scan filters.
 //!
 //! cbld ships without a glob crate — same "write the small thing ourselves"
 //! stance as `json.rs` and `hash.rs`. The supported syntax is the familiar

@@ -25,8 +25,8 @@ use crate::trace;
 
 /// What kind of artifact a package produces. Normally decided by which entry
 /// file the layout contains (`main.*` → executable, `lib.*` → library), but
-/// overridable via `[package] kind` for legacy trees whose sources aren't
-/// canonically named (0.7.0).
+/// overridable via `[package] kind` for trees whose sources aren't
+/// canonically named.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crate {
     Executable,
@@ -80,9 +80,7 @@ impl ScanConfig {
 /// The discovered, validated layout of a single package.
 #[derive(Debug, Clone)]
 pub struct Layout {
-    /// Kept for future diagnostics/migration tooling (e.g. `cbld doctor`,
-    /// `cbld migrate`) that need the package root, not just `src/`.
-    #[allow(dead_code)]
+    /// Package root (the directory that contains `cbld.toml`).
     pub root: PathBuf,
     pub src: PathBuf,
     /// The canonical entry file, when one was found. `None` for a
@@ -106,7 +104,7 @@ impl Layout {
     /// winning over `lib`, and the canonical `.cpp`/`.c` tried before the
     /// legacy `.cc`/`.cxx`/`.C` extensions.
     ///
-    /// Legacy escape hatches (0.6/0.7): `source_dir` redirects where cbld
+    /// Legacy escape hatches: `source_dir` redirects where cbld
     /// looks; `include`/`exclude` globs narrow the scan; and `kind` removes
     /// the canonical-entry requirement entirely — with `kind` set, cbld
     /// determines the language from the scanned sources and builds them as the
@@ -375,7 +373,7 @@ impl Engine {
     /// whether it was served from the global build cache.
     ///
     /// Only library artifacts (static archives) participate in the global
-    /// cache — see docs/guides/architecture.md for why executables, whose
+    /// cache — see website/docs/architecture.md for why executables, whose
     /// output is project-specific, are out of scope for it.
     pub fn build_package(
         &self,
@@ -394,9 +392,14 @@ impl Engine {
 
         let sources = layout.collect_sources()?;
         if sources.is_empty() {
+            let rel = layout
+                .src
+                .strip_prefix(&layout.root)
+                .unwrap_or(&layout.src);
             return Err(CbldError::LayoutViolation(format!(
-                "package '{}' has no source files under src/",
-                package.name
+                "package '{}' has no source files under {}/",
+                package.name,
+                rel.display()
             )));
         }
 

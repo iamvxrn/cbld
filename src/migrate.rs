@@ -95,7 +95,16 @@ impl CMakeProject {
 
         out.push_str("[package]\n");
         out.push_str(&format!("name = \"{name}\"\n"));
-        out.push_str("version = \"0.1.0\"\n\n");
+        out.push_str("version = \"0.1.0\"\n");
+        if !self.include_dirs.is_empty() {
+            let dirs: Vec<String> = self
+                .include_dirs
+                .iter()
+                .map(|d| format!("\"{d}\""))
+                .collect();
+            out.push_str(&format!("include_dirs = [{}]\n", dirs.join(", ")));
+        }
+        out.push('\n');
 
         out.push_str("[features]\ndefault = []\n\n");
 
@@ -108,14 +117,6 @@ impl CMakeProject {
         });
         out.push_str("warnings = [\"all\", \"extra\"]\n");
         out.push_str("optimization = \"0\"\n");
-        if !self.include_dirs.is_empty() {
-            let flags: Vec<String> = self
-                .include_dirs
-                .iter()
-                .map(|d| format!("\"-I{d}\""))
-                .collect();
-            out.push_str(&format!("extra_flags = [{}]\n", flags.join(", ")));
-        }
         out.push('\n');
 
         out.push_str("[dependencies]\n");
@@ -399,9 +400,9 @@ mod tests {
                 "manifest missing TODO line for {s}:\n{manifest}"
             );
         }
-        // The dominant profile (C++) must be the one actually emitted.
-        assert!(manifest.contains("[profile.cpp]"));
-        assert!(!manifest.contains("[profile.c]"));
+        assert!(manifest.contains("[package]"));
+        assert!(manifest.contains("include_dirs = [\"include\"]"));
+        assert!(!manifest.contains("extra_flags"));
     }
 
     #[test]

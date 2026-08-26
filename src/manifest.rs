@@ -69,10 +69,10 @@ pub struct Package {
     #[serde(default)]
     pub target: Option<String>,
 
-    // --- Legacy support (0.6.0) ------------------------------------------
-    // The four fields below exist so legacy / non-conforming C/C++ trees can
-    // be built without restructuring. Every default reproduces pre-0.6.0
-    // behavior exactly: `source_dir = "src"`, no extra includes, no extra
+    // --- Legacy layout knobs ---------------------------------------------
+    // The four fields below exist so non-conforming C/C++ trees can
+    // be built without restructuring. Every default reproduces the
+    // original behavior exactly: `source_dir = "src"`, no extra includes, no extra
     // defines, warnings untouched.
     /// The directory (relative to the package root) that holds the sources to
     /// scan. Defaults to `"src"`, so an existing manifest behaves identically.
@@ -98,7 +98,7 @@ pub struct Package {
     #[serde(default)]
     pub ignore_warnings: bool,
 
-    // --- Legacy support (0.7.0) ------------------------------------------
+    // --- Artifact kind and scan globs ------------------------------------
     /// Artifact kind: `"bin"` (executable) or `"lib"` (library). When set,
     /// cbld no longer requires a canonically-named `main.*`/`lib.*` entry
     /// file — real libraries whose sources are named `cJSON.c` or `format.cc`
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn package_source_dir_defaults_to_src_when_absent() {
-        // A pre-0.6.0 manifest (no source_dir key) must parse with the
+        // A manifest without source_dir must parse with the
         // canonical default, so legacy support stays fully opt-in.
         let m: Manifest = toml::from_str("[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
         let pkg = m.package.unwrap();
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn package_kind_and_scan_globs_parse_and_default() {
-        // Absent (pre-0.7.0): kind None, no globs.
+        // Absent kind/globs: kind None, no globs.
         let bare: Manifest =
             toml::from_str("[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
         let pkg = bare.package.unwrap();
