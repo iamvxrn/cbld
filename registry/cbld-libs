@@ -1,0 +1,10 @@
+# cbld package index — one mapping per line: <shorthand> <git-url>
+# Lines starting with # and blank lines are ignored.
+#
+# No curated registry is published yet. When hosting this file (e.g. on
+# Cloudflare Pages at https://cbld.pages.dev/cbld-libs), sync with:
+#   export CBLD_LIBS_URL=https://cbld.pages.dev/cbld-libs
+#   cbld sync
+#
+# Example:
+# gh:iamvxrn/foo https://github.com/iamvxrn/foo.git
