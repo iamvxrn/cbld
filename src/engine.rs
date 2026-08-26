@@ -745,9 +745,9 @@ impl Engine {
 
     /// Execute the link/archive step.
     ///
-    /// `candidates` is ordered most-preferred first. On Unix there is always
-    /// exactly one (`ar`); on Windows there may be two (`llvm-ar`, then
-    /// `lib.exe`) since either could be the one actually installed. A
+    /// `candidates` is ordered most-preferred first. Linux has one (`ar`);
+    /// macOS and Windows may list several (`llvm-ar`, then `ar` or `lib.exe`)
+    /// since either could be the one actually installed. A
     /// candidate is skipped — not failed — only when the program itself can't
     /// be spawned; once a linker/archiver actually runs, its exit code is
     /// authoritative and reported as a real failure.

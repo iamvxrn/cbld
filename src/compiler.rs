@@ -667,11 +667,21 @@ impl Compiler {
     }
 }
 
+/// GNU `ar` supports `rcsD` (deterministic zero index); BSD `ar` on macOS only
+/// accepts `rcs`.
+fn unix_ar_create_mode() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "rcs"
+    } else {
+        "rcsD"
+    }
+}
+
 /// Static-archive command candidates, most preferred first.
 ///
-/// Unix has one archiver with one calling convention: `ar rcsD <archive>
-/// <objects...>`. Windows has two incompatible ones for the same job —
-/// `llvm-ar` accepts that same Unix-style `rcsD <archive> <objects...>` form,
+/// On Linux, `ar rcsD <archive> <objects...>` (GNU). On macOS, BSD `ar` uses
+/// `rcs` instead; `llvm-ar` (when present) still accepts `rcsD`. Windows has
+/// two incompatible ones for the same job — `llvm-ar` with the Unix-style form,
 /// while MSVC's `lib.exe` wants `/OUT:<archive> <objects...>` instead. Rather
 /// than guessing which toolchain is installed, both Windows candidates are
 /// returned in preference order and `Engine::run_link` tries each in turn,
@@ -702,7 +712,26 @@ fn archiver_candidates(objects: &[PathBuf], output: &Path) -> Vec<LinkCommand> {
         ];
     }
 
-    let mut args = vec!["rcsD".to_string(), out];
+    if cfg!(target_os = "macos") {
+        let mut llvm_ar_args = vec!["rcsD".to_string(), out.clone()];
+        llvm_ar_args.extend(objs.iter().cloned());
+
+        let mut ar_args = vec![unix_ar_create_mode().to_string(), out];
+        ar_args.extend(objs);
+
+        return vec![
+            LinkCommand {
+                program: "llvm-ar".to_string(),
+                args: llvm_ar_args,
+            },
+            LinkCommand {
+                program: "ar".to_string(),
+                args: ar_args,
+            },
+        ];
+    }
+
+    let mut args = vec![unix_ar_create_mode().to_string(), out];
     args.extend(objs);
     vec![LinkCommand {
         program: "ar".to_string(),
@@ -779,7 +808,7 @@ mod tests {
         assert!(cmds[1].args.contains(&"b.obj".to_string()));
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     #[test]
     fn link_command_library_unix_single_candidate() {
         let c = compiler();
@@ -793,6 +822,21 @@ mod tests {
         assert_eq!(cmds[0].args[1], "libmy.a");
         assert!(cmds[0].args.contains(&"a.o".to_string()));
         assert!(cmds[0].args.contains(&"b.o".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn link_command_library_macos_fallback_chain() {
+        let c = compiler();
+        let objects = vec![PathBuf::from("a.o"), PathBuf::from("b.o")];
+        let output = PathBuf::from("libmy.a");
+
+        let cmds = c.link_command(&objects, &output, false, true);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].program, "llvm-ar");
+        assert_eq!(cmds[0].args[0], "rcsD");
+        assert_eq!(cmds[1].program, "ar");
+        assert_eq!(cmds[1].args[0], "rcs");
     }
 
     /// Object/archive extensions are decided by the engine when it builds the
