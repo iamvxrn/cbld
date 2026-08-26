@@ -19,8 +19,7 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Monorepo: the CLI crate lives in . All `run:` steps below execute
-    # there, so cargo finds Cargo.toml without an explicit --manifest-path.
+    # Repo root is the CLI crate; all `run:` steps below use cargo from here.
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +34,6 @@ jobs:
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
-        with:
 
       # --- Toolchain: clang / llvm-ar (Linux) -----------------------------
       - name: Install clang + LLVM (Linux)
