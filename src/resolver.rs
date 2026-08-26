@@ -11,7 +11,7 @@
 //! The resolver shells out to real `git`/`curl` rather than embedding a VCS
 //! library — this keeps the binary small and matches cbld's design.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,6 +43,9 @@ pub struct ResolvedDep {
     pub cache_path: PathBuf,
     /// Names of this dependency's own direct dependencies.
     pub dependencies: Vec<String>,
+    /// Feature names requested by the depending package (`{ features = [...] }`).
+    /// Passed into that dependency's own `resolve_features` when compiling it.
+    pub features: Vec<String>,
 }
 
 /// Owns the cbld home directories and the shorthand mapping table.
@@ -79,27 +82,71 @@ impl Resolver {
         &self.home
     }
 
-    /// Resolve all dependencies of a manifest.
+    /// Resolve the full dependency graph of a manifest, including transitives.
     ///
-    /// If `lock` is `Some`, resolution is pinned to the recorded SHAs (the
-    /// reproducible path used by `cbld build`). If `None`, fresh resolution is
-    /// performed and new SHAs are fetched (the `cbld update` path).
+    /// Walks each package's own `cbld.toml` `[dependencies]` depth-first and
+    /// emits a topological order (dependents after their dependencies) so
+    /// `build_dependencies` can compile archives before they are linked.
+    /// Cycles are an error. If `lock` is `Some`, known packages are pinned to
+    /// the recorded SHAs; packages missing from the lock resolve freshly.
     pub fn resolve_all(
         &self,
         manifest: &Manifest,
         lock: Option<&Lockfile>,
     ) -> Result<Vec<ResolvedDep>> {
-        let mut resolved = Vec::new();
+        let mut out = Vec::new();
+        let mut visiting = HashSet::new();
+        let mut done = HashSet::new();
         for (shorthand, dep) in &manifest.dependencies {
-            let locked = lock.and_then(|l| l.get(&package_name(shorthand)));
-            let r = self.resolve_one(shorthand, dep, locked)?;
-            resolved.push(r);
+            self.resolve_tree(shorthand, dep, lock, &mut visiting, &mut done, &mut out)?;
         }
-        Ok(resolved)
+        Ok(out)
+    }
+
+    fn resolve_tree(
+        &self,
+        shorthand: &str,
+        dep: &Dependency,
+        lock: Option<&Lockfile>,
+        visiting: &mut HashSet<String>,
+        done: &mut HashSet<String>,
+        out: &mut Vec<ResolvedDep>,
+    ) -> Result<()> {
+        let name = package_name(shorthand);
+        if done.contains(&name) {
+            if let Some(existing) = out.iter_mut().find(|r| r.name == name) {
+                for f in &dep.features {
+                    if !existing.features.contains(f) {
+                        existing.features.push(f.clone());
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if visiting.contains(&name) {
+            return Err(CbldError::Resolution(format!(
+                "cyclic dependency involving '{shorthand}'"
+            )));
+        }
+        visiting.insert(name.clone());
+
+        let locked = lock.and_then(|l| l.get(&name));
+        let mut resolved = self.resolve_one(shorthand, dep, locked)?;
+        resolved.features = dep.features.clone();
+
+        let sub_manifest = Manifest::load(&resolved.cache_path)?;
+        for (child_key, child_dep) in &sub_manifest.dependencies {
+            self.resolve_tree(child_key, child_dep, lock, visiting, done, out)?;
+        }
+
+        visiting.remove(&name);
+        done.insert(name);
+        out.push(resolved);
+        Ok(())
     }
 
     /// Resolve a single dependency entry.
-    fn resolve_one(
+    pub(crate) fn resolve_one(
         &self,
         shorthand: &str,
         dep: &Dependency,
@@ -139,6 +186,7 @@ impl Resolver {
             checksum,
             cache_path: dest,
             dependencies: sub_deps,
+            features: dep.features.clone(),
         })
     }
 
@@ -518,11 +566,12 @@ fn tag_candidates(version: &str) -> Vec<String> {
     out
 }
 
-/// Resolve `~/.cbld`, honoring `$CBLD_HOME` then `$HOME`.
+/// Resolve `~/.cbld`, honoring `$CBLD_HOME`, then `$HOME`, then
+/// `$USERPROFILE` (Windows).
 ///
-/// `pub(crate)` because the global build cache (`hash.rs`) needs the same
-/// resolution rule — there is exactly one definition of "where is cbld's
-/// home directory" in the codebase.
+/// `pub(crate)` because the global build cache (`hash.rs`) and `doctor`
+/// need the same resolution rule — there is exactly one definition of
+/// "where is cbld's home directory" in the codebase.
 pub(crate) fn cbld_home() -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("CBLD_HOME") {
         if !explicit.is_empty() {
@@ -530,10 +579,15 @@ pub(crate) fn cbld_home() -> Result<PathBuf> {
         }
     }
     let home = std::env::var("HOME")
-        .map_err(|_| CbldError::Environment("HOME is not set; cannot locate ~/.cbld".into()))?;
-    if home.is_empty() {
-        return Err(CbldError::Environment("HOME is empty".into()));
-    }
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()))
+        .ok_or_else(|| {
+            CbldError::Environment(
+                "neither HOME nor USERPROFILE is set; cannot locate ~/.cbld (or set CBLD_HOME)"
+                    .into(),
+            )
+        })?;
     Ok(PathBuf::from(home).join(".cbld"))
 }
 

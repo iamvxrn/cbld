@@ -7,7 +7,7 @@
 //! thorough check is the right trade — the user is already stopped and wants
 //! to know why.
 
-use std::path::PathBuf;
+use std::io::ErrorKind;
 use std::process::Command;
 
 use crate::error::Result;
@@ -187,26 +187,52 @@ fn check_compiler(driver: &'static str, label: &str) -> Check {
 }
 
 fn check_archiver() -> Check {
-    match Command::new("ar").arg("--version").output() {
-        Ok(out) if out.status.success() => {
-            let first_line = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .next()
-                .unwrap_or("ar")
-                .to_string();
-            Check {
-                name: "ar",
-                ok: true,
-                detail: first_line,
-                fix: None,
-            }
+    // Same preference order as `archiver_candidates` in compiler.rs:
+    // llvm-ar (macOS/Windows), then system `ar`, then MSVC `lib.exe`.
+    for name in ["llvm-ar", "ar", "lib.exe"] {
+        if name == "lib.exe" && cfg!(not(target_os = "windows")) {
+            continue;
         }
-        _ => Check {
-            name: "ar",
-            ok: false,
-            detail: "not found on PATH (required to archive static libraries)".to_string(),
-            fix: Some(install_hint_binutils()),
-        },
+        if !tool_on_path(name) {
+            continue;
+        }
+        let detail = archiver_version_line(name).unwrap_or_else(|| format!("{name} found on PATH"));
+        return Check {
+            name: "archiver",
+            ok: true,
+            detail,
+            fix: None,
+        };
+    }
+    Check {
+        name: "archiver",
+        ok: false,
+        detail: "no archiver on PATH (need llvm-ar, ar, or lib.exe)".to_string(),
+        fix: Some(install_hint_binutils()),
+    }
+}
+
+/// `Command::new` only yields NotFound when the binary is absent; any other
+/// result (including a non-zero `--version`) means the tool exists.
+fn tool_on_path(name: &str) -> bool {
+    match Command::new(name).arg("--version").output() {
+        Ok(_) => true,
+        Err(e) => e.kind() != ErrorKind::NotFound,
+    }
+}
+
+fn archiver_version_line(name: &str) -> Option<String> {
+    let out = Command::new(name).arg("--version").output().ok()?;
+    let text = if out.status.success() {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    } else {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let line = text.lines().next()?.trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line.to_string())
     }
 }
 
@@ -349,34 +375,29 @@ fn check_system_headers() -> Check {
 }
 
 fn check_cbld_home() -> Check {
-    let home = match std::env::var("CBLD_HOME") {
-        Ok(h) if !h.is_empty() => PathBuf::from(h),
-        _ => match std::env::var("HOME") {
-            Ok(h) if !h.is_empty() => PathBuf::from(h).join(".cbld"),
-            _ => {
-                return Check {
-                    name: "cbld home",
-                    ok: false,
-                    detail: "neither $CBLD_HOME nor $HOME is set".to_string(),
-                    fix: Some("export HOME (or CBLD_HOME) so cbld can locate its cache".into()),
-                };
-            }
+    match crate::resolver::cbld_home() {
+        Err(e) => Check {
+            name: "cbld home",
+            ok: false,
+            detail: e.to_string(),
+            fix: Some("set HOME, USERPROFILE, or CBLD_HOME so cbld can locate its cache".into()),
         },
-    };
-
-    if home.is_dir() {
-        Check {
-            name: "cbld home",
-            ok: true,
-            detail: home.display().to_string(),
-            fix: None,
-        }
-    } else {
-        Check {
-            name: "cbld home",
-            ok: true,
-            detail: format!("{} (will be created on first build)", home.display()),
-            fix: None,
+        Ok(home) => {
+            if home.is_dir() {
+                Check {
+                    name: "cbld home",
+                    ok: true,
+                    detail: home.display().to_string(),
+                    fix: None,
+                }
+            } else {
+                Check {
+                    name: "cbld home",
+                    ok: true,
+                    detail: format!("{} (will be created on first build)", home.display()),
+                    fix: None,
+                }
+            }
         }
     }
 }

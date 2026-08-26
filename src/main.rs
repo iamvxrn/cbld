@@ -27,7 +27,7 @@ use compiler::Compiler;
 use engine::{default_jobs, require_package, Crate, Engine, Layout, ScanConfig};
 use error::{CbldError, IoPathExt, Result};
 use json::Json;
-use manifest::{Lockfile, Manifest, Package, ToolchainSpec};
+use manifest::{Dependency, Lockfile, Manifest, Package, ToolchainSpec};
 use resolver::{build_lockfile, package_name, ResolvedDep, Resolver};
 
 fn main() {
@@ -233,7 +233,7 @@ fn build_single(
     let layout = Layout::assert_cbld_standard(root, &scan)?;
 
     // --- Toolchain pin (opt-in; skipped entirely when unset, preserving the
-    // hot-path guarantee documented in architecture.md) -------------------
+    // hot-path guarantee documented in website/docs/architecture.md) -------
     if let Some(spec) = &package.toolchain {
         ToolchainSpec::parse(spec)?.validate()?;
     }
@@ -248,11 +248,12 @@ fn build_single(
             let existing_lock = Lockfile::load(root)?;
             let resolved = resolver.resolve_all(manifest, existing_lock.as_ref())?;
 
-            // Write the lock if it was absent (first successful resolution).
-            if existing_lock.is_none() && !resolved.is_empty() {
+            // Keep cbld.lock in sync with the resolved graph (including
+            // newly discovered transitives) so vendor/check see the same set.
+            if !resolved.is_empty() {
                 let lock = build_lockfile(&resolved);
                 lock.save(root)?;
-                if !quiet {
+                if existing_lock.is_none() && !quiet {
                     println!(
                         "\x1b[1;32m    Locking\x1b[0m {} dependenc{}",
                         resolved.len(),
@@ -348,15 +349,10 @@ fn vendored_dependencies(root: &Path, manifest: &Manifest) -> Result<Option<Vec<
         )
     })?;
 
-    let mut resolved = Vec::with_capacity(manifest.dependencies.len());
-    for shorthand in manifest.dependencies.keys() {
-        let name = package_name(shorthand);
-        let locked = lock.get(&name).ok_or_else(|| {
-            CbldError::Config(format!(
-                "vendored dependency '{name}' has no entry in cbld.lock"
-            ))
-        })?;
-        let cache_path = vendor_dir.join(&name);
+    let mut resolved = Vec::with_capacity(lock.dependencies.len());
+    for locked in &lock.dependencies {
+        let name = &locked.name;
+        let cache_path = vendor_dir.join(name);
         if !cache_path.is_dir() {
             return Err(CbldError::Config(format!(
                 "third_party/{name} is missing; run `cbld vendor` again"
@@ -364,16 +360,57 @@ fn vendored_dependencies(root: &Path, manifest: &Manifest) -> Result<Option<Vec<
         }
         resolved.push(ResolvedDep {
             name: name.clone(),
-            shorthand: shorthand.clone(),
+            shorthand: name.clone(),
             url: locked.source.trim_start_matches("git+").to_string(),
             source: locked.source.clone(),
             version: locked.version.clone(),
             checksum: locked.checksum.clone(),
             cache_path,
             dependencies: locked.dependencies.clone(),
+            features: Vec::new(),
         });
     }
+
+    // Recover `{ features = [...] }` requests from the root manifest and
+    // each vendored package's own cbld.toml (the lockfile does not store them).
+    let mut feature_map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    merge_requested_features(&mut feature_map, &manifest.dependencies);
+    for r in &resolved {
+        if let Ok(m) = Manifest::load(&r.cache_path) {
+            merge_requested_features(&mut feature_map, &m.dependencies);
+        }
+    }
+    for r in &mut resolved {
+        if let Some(f) = feature_map.remove(&r.name) {
+            r.features = f;
+        }
+    }
+
+    // Direct deps named in the root manifest must still appear in the lock.
+    for shorthand in manifest.dependencies.keys() {
+        let name = package_name(shorthand);
+        if !resolved.iter().any(|r| r.name == name) {
+            return Err(CbldError::Config(format!(
+                "vendored dependency '{name}' has no entry in cbld.lock"
+            )));
+        }
+    }
     Ok(Some(resolved))
+}
+
+fn merge_requested_features(
+    into: &mut std::collections::BTreeMap<String, Vec<String>>,
+    deps: &std::collections::BTreeMap<String, Dependency>,
+) {
+    for (shorthand, dep) in deps {
+        let slot = into.entry(package_name(shorthand)).or_default();
+        for f in &dep.features {
+            if !slot.contains(f) {
+                slot.push(f.clone());
+            }
+        }
+    }
 }
 
 /// Build every member of a workspace in declaration order.
@@ -449,7 +486,7 @@ fn build_dependencies(
 
         // Dependencies are always built as libraries regardless of their own
         // entry kind hint — we link their archive into the consumer.
-        let dep_features = dep_manifest.resolve_features(&[], false);
+        let dep_features = dep_manifest.resolve_features(&dep.features, false);
         // Dependencies are never traced: `--trace` profiles the package
         // being actively worked on, not its (already-stable) dependencies.
         // They *are* cross-compiled for `cross_target`, though — see the
@@ -592,19 +629,22 @@ fn cmd_update(args: UpdateArgs, verbose: bool, quiet: bool) -> Result<()> {
 
     let mut resolved = resolver.resolve_all(&manifest, pin)?;
 
-    // If a specific package was requested, re-resolve only it freshly while the
-    // rest stay at their locked SHAs (already applied above via `pin`).
+    // If a specific package was requested, re-resolve only that node
+    // (fresh SHA) while the rest stay at their locked SHAs.
     if let Some(only) = &args.package {
         let target = package_name(only);
-        for dep in resolved.iter_mut() {
-            if dep.name == target {
-                // Force a fresh resolution by re-running without the pin.
-                let fresh = resolver.resolve_all(&manifest, None)?;
-                if let Some(updated) = fresh.into_iter().find(|d| d.name == target) {
-                    *dep = updated;
-                }
-            }
-        }
+        let pos = resolved.iter().position(|d| d.name == target).ok_or_else(|| {
+            CbldError::Resolution(format!(
+                "'{only}' is not a dependency of this package (use the package name, e.g. the last segment of gh:owner/repo)"
+            ))
+        })?;
+        let existing = resolved[pos].clone();
+        let spec = Dependency {
+            version: existing.version.clone(),
+            features: existing.features.clone(),
+            tag: None,
+        };
+        resolved[pos] = resolver.resolve_one(&existing.shorthand, &spec, None)?;
     }
 
     let lock = build_lockfile(&resolved);
@@ -738,7 +778,7 @@ fn cmd_init(args: InitArgs, quiet: bool) -> Result<()> {
     if !manifest_path.exists() {
         let profile = if is_c { C_PROFILE } else { CPP_PROFILE };
         let manifest = format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.2.0\"\n\n\
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
              [features]\ndefault = []\n\n{profile}\n[dependencies]\n"
         );
         std::fs::write(&manifest_path, manifest).path_ctx(&manifest_path)?;
