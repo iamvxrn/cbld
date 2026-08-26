@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
-  <g stroke="#4a7bc0" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M50 16 L74 30 L50 44 L26 30 Z" fill="#4a7bc0" fill-opacity="0.18"/>
-    <path d="M26 30 L26 58 L50 72"/>
-    <path d="M74 30 L74 58 L50 72"/>
-    <path d="M50 44 L50 72"/>
+  <defs>
+    <linearGradient id="cbldMark" x1="16" y1="12" x2="84" y2="88" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7fb2ec"/>
+      <stop offset="1" stop-color="#3a628f"/>
+    </linearGradient>
+  </defs>
+  <g stroke="url(#cbldMark)" stroke-width="11" stroke-linecap="round">
+    <path d="M72.6 27.4 A32 32 0 0 0 29.9 25.1"/>
+    <path d="M26.2 28.6 A32 32 0 0 0 26.2 71.4"/>
+    <path d="M29.9 74.9 A32 32 0 0 0 72.6 72.6"/>
   </g>
-  <path d="M22 86 L78 86" stroke="#4a7bc0" stroke-width="8" stroke-linecap="round"/>
+  <rect x="39" y="39" width="22" height="22" rx="6" fill="url(#cbldMark)"/>
 </svg>
