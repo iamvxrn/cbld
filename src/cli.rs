@@ -60,11 +60,12 @@ pub enum Command {
     /// Diagnose the local toolchain and environment (clang, ar, headers, ...).
     Doctor,
 
-    /// Refresh the local package index (~/.cbld/cbld-libs) from the registry.
+    /// Refresh the local package index (~/.cbld/cbld-libs) from a remote index.
     ///
-    /// Touches only that one flat-text index file via native OS fetch tools.
-    /// Never resolves dependencies, never touches a project's `cbld.lock` —
-    /// see `Update` for that.
+    /// Requires `CBLD_LIBS_URL` (no default registry is published yet). Touches
+    /// only that one flat-text index file via native OS fetch tools. Never
+    /// resolves dependencies, never touches a project's `cbld.lock` — see
+    /// `Update` for that.
     Sync,
 
     /// Generate a starter cbld.toml from an existing build system's config.

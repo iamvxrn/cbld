@@ -369,8 +369,18 @@ impl Resolver {
     /// That keeps the dependency tree and compile times exactly as small as
     /// the rest of cbld.
     pub fn sync_index(&self, quiet: bool) -> Result<()> {
-        let url =
-            std::env::var("CBLD_LIBS_URL").unwrap_or_else(|_| CBLD_LIBS_INDEX_URL.to_string());
+        let url = match std::env::var("CBLD_LIBS_URL") {
+            Ok(v) if !v.trim().is_empty() => v,
+            _ => {
+                return Err(CbldError::Config(
+                    "no package index URL configured — set CBLD_LIBS_URL to a flat-text \
+                     index (shorthand + URL per line). A public cbld registry is not \
+                     published yet; `gh:user/repo` shorthands still resolve via built-in \
+                     heuristics without `cbld sync`"
+                        .into(),
+                ));
+            }
+        };
         let dest = self.home.join("cbld-libs");
         let tmp = self.home.join("cbld-libs.tmp");
 
@@ -393,11 +403,6 @@ impl Resolver {
         Ok(())
     }
 }
-
-/// Default location of the flat-text package index. Overridable via
-/// `CBLD_LIBS_URL` for self-hosted or air-gapped registries.
-const CBLD_LIBS_INDEX_URL: &str =
-    "https://raw.githubusercontent.com/xntas/cbld/main/website/static/cbld-libs";
 
 /// Fetch `url` into `dest` using only OS-native tools — no HTTP crate.
 fn fetch_to_file(url: &str, dest: &Path) -> Result<()> {
@@ -594,6 +599,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sync_index_requires_cbld_libs_url() {
+        let prev_home = std::env::var("CBLD_HOME").ok();
+        let prev_url = std::env::var("CBLD_LIBS_URL").ok();
+        std::env::remove_var("CBLD_LIBS_URL");
+
+        let home = std::env::temp_dir().join(format!("cbld-sync-test-{}", std::process::id()));
+        std::env::set_var("CBLD_HOME", &home);
+
+        let resolver = Resolver::new(false).expect("resolver");
+        let err = resolver.sync_index(true).unwrap_err();
+        assert!(
+            err.to_string().contains("CBLD_LIBS_URL"),
+            "unexpected error: {err}"
+        );
+
+        if let Some(v) = prev_home {
+            std::env::set_var("CBLD_HOME", v);
+        } else {
+            std::env::remove_var("CBLD_HOME");
+        }
+        if let Some(v) = prev_url {
+            std::env::set_var("CBLD_LIBS_URL", v);
+        } else {
+            std::env::remove_var("CBLD_LIBS_URL");
+        }
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn tag_candidates_tries_both_v_prefix_spellings() {
         // Bare version -> also try the v-prefixed tag (the common case that was
         // silently resolving to "latest" before).
@@ -606,7 +640,7 @@ mod tests {
 
     #[test]
     fn package_name_takes_last_segment_without_git_suffix() {
-        assert_eq!(package_name("gh:xntas/json"), "json");
+        assert_eq!(package_name("gh:iamvxrn/json"), "json");
         assert_eq!(package_name("gh:user/http_parser.git"), "http_parser");
     }
 }
