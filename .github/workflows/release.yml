@@ -18,6 +18,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             asset_name: x86_64-unknown-linux-gnu.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: aarch64-unknown-linux-gnu.tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
             asset_name: x86_64-apple-darwin.tar.gz
@@ -37,14 +40,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install aarch64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
       - name: Build Binary
-        run: cargo build  --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Package Artifact (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
-          TAG_NAME="${GITHUB_REF_NAME:-v0.8.0}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.3.1}"
           tar -czf "dist/cbld-${TAG_NAME}-${{ matrix.asset_name }}" -C target/${{ matrix.target }}/release cbld
 
       - name: Package Artifact (Windows)
@@ -52,7 +61,7 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          $TAG_NAME = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.8.0" }
+          $TAG_NAME = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.3.1" }
           Compress-Archive -Path "target/${{ matrix.target }}/release/cbld.exe" -DestinationPath "dist/cbld-${TAG_NAME}-${{ matrix.asset_name }}"
 
       - name: Upload Release Asset

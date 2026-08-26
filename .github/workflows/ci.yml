@@ -5,11 +5,23 @@ on:
     branches: [main, develop]
     paths:
       - "src/**"
-      - ".github/workflows/ci.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "install.sh"
+      - "install.ps1"
+      - "uninstall.sh"
+      - "uninstall.ps1"
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "src/**"
-      - ".github/workflows/ci.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "install.sh"
+      - "install.ps1"
+      - "uninstall.sh"
+      - "uninstall.ps1"
+      - ".github/workflows/**"
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout
@@ -36,6 +48,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # --- Toolchain: clang / llvm-ar (Linux) -----------------------------
+      - name: Install clang + LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+          clang --version
+          ar --version
+
+      # macOS runners ship Xcode clang + BSD ar; llvm-ar is optional.
+
+      # --- Toolchain: clang / llvm-ar / lib.exe (Windows) -----------------
       - name: Install clang + LLVM (Linux)
         if: runner.os == 'Linux'
         run: |
