@@ -28,6 +28,7 @@ export default defineConfig({
         items: [
           { text: 'Manifest', link: '/manifest' },
           { text: 'CLI Reference', link: '/cli' },
+          { text: 'Architecture', link: '/architecture' },
         ]
       }
     ],

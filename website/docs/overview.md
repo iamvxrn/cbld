@@ -22,4 +22,4 @@ graph TD
 
 ## Package index
 
-`cbld sync` downloads a flat-text shorthand → URL map into `~/.cbld/cbld-libs`. There is **no public registry yet** — set `CBLD_LIBS_URL` when you host an index file (see `registry/cbld-libs` in the repo). Built-in `gh:user/repo` shorthands still resolve without syncing.
+`cbld sync` downloads a flat-text shorthand → URL map into `~/.cbld/cbld-libs` when `CBLD_LIBS_URL` is set. There is **no public registry**. Built-in `gh:user/repo` shorthands resolve without syncing. See [architecture](/architecture).

@@ -8,37 +8,59 @@ cbld reads a `cbld.toml` at the root of your project.
 [package]
 name = "my_app"
 version = "0.1.0"
+description = "optional"
+authors = ["you"]
 
 [profile.cpp]
 standard = "c++20"
 optimization = "2"
 warnings = ["all", "extra"]
+rtti = false
+exceptions = true
 
 [dependencies]
-# gh:user/repo shorthand — resolved via ~/.cbld/cbld-libs or built-in heuristics
+"gh:owner/repo" = "1.2.3"
+"gh:owner/other" = { version = "2.0", features = ["ssl"], tag = "v2.0.1" }
 ```
 
-`cbld init` scaffolds a minimal manifest plus `src/main.cpp` (or `main.c`, library variants with `--lib` / `--c`).
+`cbld init` scaffolds a minimal manifest plus `src/main.cpp` (or `main.c`, library variants with `--lib` / `--c`). New packages start at `version = "0.1.0"`.
 
 ## `[package]` fields
 
 | Field | Description |
 |---|---|
 | `name` | Package name |
-| `version` | Version string (used for lockfile metadata) |
-| `toolchain` | Optional pinned compiler, e.g. `clang-18.1` (`cbld doctor` / build checks) |
+| `version` | Version string (lockfile metadata; not cbld's own version) |
+| `description` | Optional free text |
+| `authors` | Optional list of strings |
+| `toolchain` | Optional pinned compiler, e.g. `clang-18.1` |
 | `target` | Optional cross-compile triple for `--target=` |
 | `source_dir` | Source scan root (default `src`) |
 | `include_dirs` | Extra `-I` paths relative to package root |
 | `defines` | Project-wide `-D` defines for C and C++ |
 | `ignore_warnings` | Inject `-w` for all translation units |
-| `kind` | `bin` / `lib` when entry file name does not imply the artifact type |
+| `kind` | `bin` / `lib` when the entry file name does not imply the artifact type |
 | `include` / `exclude` | Glob patterns to narrow the source scan |
 
-## Profiles and dependencies
+## Profiles
 
-- `[profile.c]` / `[profile.cpp]` — `standard`, `optimization`, `warnings`, `defines`, `sanitizers`, `lto`, `extra_flags`.
-- `[dependencies]` — keys like `gh:owner/repo` with version or `{ version, features }` values.
-- `[features]` — optional feature flags for conditional dependencies.
+- `[profile.c]` / `[profile.cpp]`: `standard`, `optimization`, `warnings`, `defines`, `sanitizers`, `lto`, `extra_flags`.
+- `[profile.cpp]` only: `rtti`, `exceptions`.
 
-Lockfile: `cbld.lock` (written by `cbld update` / resolved during `cbld build`).
+## Dependencies and features
+
+- `[dependencies]` — keys like `gh:owner/repo`. Value is a version string or `{ version, features, tag }`. `tag` overrides the git tag when it differs from `version`. `features` are passed into that dependency when compiling it.
+- `[features]` — named groups that expand to extra `-DCBLD_FEATURE_<NAME>` defines. They do **not** turn dependencies on or off.
+
+## Workspace
+
+```toml
+[workspace]
+members = ["crates/app", "crates/lib"]
+```
+
+Each member is a full package with its own `cbld.toml`. `cbld build` at the workspace root builds members in list order.
+
+## Lockfile
+
+`cbld.lock` is written by `cbld build` and `cbld update`. It pins git SHAs for the whole graph, including transitives.

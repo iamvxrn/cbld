@@ -1,5 +1,7 @@
 # CLI Reference
 
+Global flags: `-v` / `--verbose`, `-q` / `--quiet`, `--json` (honored by `build` and `doctor` only).
+
 ## `build`
 
 Compile the package and its dependencies.
@@ -8,23 +10,22 @@ Compile the package and its dependencies.
 cbld build
 cbld build --release -j 8
 cbld build --from vendor/foo --ignore-warnings
+cbld build --json
 ```
 
-Notable flags: `--release`, `-o` / `--output`, `-j` / `--jobs`, `--features`, `--trace`, `--target`, `--from`.
+Flags: `--release`, `-o` / `--output`, `-j` / `--jobs`, `--manifest-path`, `--features`, `--no-default-features`, `--trace`, `--target`, `--from`, `--ignore-warnings`.
 
 ## `run`
 
-Build (if needed) and execute the binary.
+Build (if needed) and execute the binary. Accepts the same flags as `build`. `--json` is accepted and ignored.
 
 ```bash
 cbld run
 ```
 
-Accepts the same build flags as `build`.
-
 ## `init`
 
-Scaffold a new package in the given directory (or current dir).
+Scaffold a new package (`cbld.toml` version `0.1.0` plus `src/main.cpp`).
 
 ```bash
 cbld init
@@ -36,7 +37,7 @@ cbld init my-app --lib --c
 Run Clang's static analyzer without producing object files or linking.
 
 ```bash
-cbld check
+cbld check -j 4 --manifest-path .
 ```
 
 ## `update`
@@ -45,23 +46,25 @@ Re-resolve dependencies and rewrite `cbld.lock` (does not touch the package inde
 
 ```bash
 cbld update
-cbld update gh:owner/repo
+cbld update http_parser
 ```
+
+The optional argument is the **package name** (last path segment of `gh:owner/repo`).
 
 ## `sync`
 
-Download the flat-text package index into `~/.cbld/cbld-libs`.
+Download a flat-text package index into `~/.cbld/cbld-libs`.
 
 ```bash
-export CBLD_LIBS_URL=https://cbld.pages.dev/cbld-libs
+export CBLD_LIBS_URL=https://example.com/cbld-libs
 cbld sync
 ```
 
-Requires `CBLD_LIBS_URL` — there is no default public registry yet.
+Requires `CBLD_LIBS_URL`. There is no default public registry. Host `registry/cbld-libs` yourself if you need shorthand aliases beyond `gh:`.
 
 ## `doctor`
 
-Diagnose the local toolchain (`clang`, `ar`, headers, fetch tools for sync).
+Diagnose the local toolchain (`clang`, archiver, headers, fetch tools).
 
 ```bash
 cbld doctor
@@ -70,10 +73,10 @@ cbld doctor --json
 
 ## `vendor`
 
-Copy every locked dependency into `third_party/` for offline builds.
+Copy every locked dependency (including transitives) into `third_party/`.
 
 ```bash
-cbld vendor
+cbld vendor --manifest-path .
 ```
 
 ## `migrate`
@@ -81,14 +84,12 @@ cbld vendor
 Generate a starter `cbld.toml` from an existing CMake project.
 
 ```bash
-cbld migrate --from=cmake
+cbld migrate --from=cmake --path .
 ```
 
-Only `--from=cmake` is implemented today (reads `CMakeLists.txt`).
+Only `--from=cmake` is implemented (reads `CMakeLists.txt`). Include directories become `[package] include_dirs`.
 
 ## `completions`
-
-Generate shell completions.
 
 ```bash
 cbld completions zsh

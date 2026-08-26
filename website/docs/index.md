@@ -21,7 +21,7 @@ A build engine for C and C++ — strict project layout, Clang under the hood, re
   </section>
   <section>
     <h3>Cached builds</h3>
-    <p>Static libraries are fingerprinted and reused from <code>~/.cbld/cache</code> across checkouts.</p>
+    <p>Static libraries are fingerprinted and reused from <code>~/.cbld/cache/prebuilt</code>.</p>
   </section>
   <section>
     <h3>Vendored deps</h3>
