@@ -1,32 +1,59 @@
-# cbld in your terminal
+# cbld
 
-cbld is a single Rust CLI for building C and C++ projects — strict layout, Clang integration, and reproducible builds out of the box.
+A build engine for C and C++ — strict project layout, Clang under the hood, reproducible builds.
 
-<div style="display: flex; gap: 12px; margin-top: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: center;">
-  <a href="/quickstart" style="background-color: var(--vp-button-brand-bg); color: var(--vp-button-brand-text); padding: 8px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">Quickstart</a>
-  <a href="https://github.com/iamvxrn/cbld" style="background-color: var(--vp-button-alt-bg); color: var(--vp-button-alt-text); padding: 8px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; border: 1px solid var(--vp-button-alt-border); transition: background-color 0.2s;">GitHub</a>
-  
-  <div style="background-color: #161618; border: 1px solid #3c3f44; border-radius: 8px; padding: 6px 12px; display: flex; align-items: center; gap: 8px; font-family: monospace; font-size: 13px;">
-    <span style="color: #8b949e;">$</span> curl -fsSL https://cbld.pages.dev/install.sh | sh
-    <button style="background: #2c2e33; color: #c9d1d9; border: none; padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 8px;">Copy</button>
-  </div>
+<div class="cbld-install">
+  <span class="prompt">$</span>
+  <span>curl -fsSL https://cbld.pages.dev/install.sh | sh</span>
+  <button onclick="navigator.clipboard.writeText('curl -fsSL https://cbld.pages.dev/install.sh | sh')">Copy</button>
 </div>
 
-<div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 2rem;">
-  <span style="background-color: #202127; color: #a1a1aa; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;">Clang</span>
-  <span style="background-color: #202127; color: #a1a1aa; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;">C/C++</span>
-  <span style="background-color: #202127; color: #a1a1aa; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;">Rust</span>
-  <span style="background-color: #202127; color: #a1a1aa; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;">Cross-Platform</span>
-  <span style="background-color: #202127; color: #a1a1aa; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;">Vendored Dependencies</span>
+[Quickstart](/quickstart) · [Other install options](/install) · [GitHub](https://github.com/iamvxrn/cbld)
+
+<div class="cbld-grid">
+  <section>
+    <h3>Declarative</h3>
+    <p>One <code>cbld.toml</code> at the repo root. No Makefiles, no CMake scripts, no build glue.</p>
+  </section>
+  <section>
+    <h3>Clang-first</h3>
+    <p>Compile, analyze, and link through LLVM/Clang with the same flags on Linux, macOS, and Windows.</p>
+  </section>
+  <section>
+    <h3>Cached builds</h3>
+    <p>Static libraries are fingerprinted and reused from <code>~/.cbld/cache</code> across checkouts.</p>
+  </section>
+  <section>
+    <h3>Vendored deps</h3>
+    <p>Git dependencies pinned in <code>cbld.lock</code>; <code>cbld vendor</code> copies them into <code>third_party/</code>.</p>
+  </section>
 </div>
-
-[Other install options →](/install)
-
----
 
 ## Try it
 
 ```bash
 cbld init my-app && cd my-app
 cbld run
+```
+
+## What a package looks like
+
+```toml
+# cbld.toml
+[package]
+name = "my_app"
+version = "0.1.0"
+
+[profile.cpp]
+standard = "c++20"
+optimization = "2"
+warnings = ["all", "extra"]
+```
+
+```
+my-app/
+├── cbld.toml
+├── include/        # optional public headers
+└── src/
+    └── main.cpp
 ```
