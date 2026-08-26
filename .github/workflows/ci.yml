@@ -79,10 +79,3 @@ jobs:
       - name: cbld doctor (sanity check)
         shell: bash
         run: cargo run --quiet -- doctor
-
-      - name: cbld sync (sanity check)
-        shell: bash
-        # Hits the live package-index registry over the network; treated as
-        # advisory so transient network/registry hiccups don't fail the build.
-        continue-on-error: true
-        run: cargo run --quiet -- sync
