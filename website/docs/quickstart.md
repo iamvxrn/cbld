@@ -30,7 +30,7 @@ Overlay recipes ship for a few trees that have no `cbld.toml`. Clone is unmodifi
 
 ```toml
 [dependencies]
-"gh:nlohmann/json" = "3.11.3"
+"gh:nlohmann/json" = "3.12.0"
 ```
 
 ```cpp

@@ -106,9 +106,21 @@ jobs:
         run: cargo run --quiet -- doctor
 
   recipes:
-    name: overlay recipes
+    name: overlay recipes (${{ matrix.set }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - set: previous
+            json: "3.11.3"
+            cjson: "1.7.18"
+            fmt: "11.2.0"
+          - set: current
+            json: "3.12.0"
+            cjson: "1.7.19"
+            fmt: "12.2.0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -131,13 +143,13 @@ jobs:
       - name: Build nlohmann/json, cJSON, fmt from upstream
         shell: bash
         env:
-          CBLD_HOME: ${{ runner.temp }}/cbld-home
+          CBLD_HOME: ${{ runner.temp }}/cbld-home-${{ matrix.set }}
         run: |
           set -euo pipefail
           BIN="$(pwd)/target/debug/cbld"
-          WORK="${{ runner.temp }}/overlay-probe"
+          WORK="${{ runner.temp }}/overlay-probe-${{ matrix.set }}"
           mkdir -p "$WORK/src"
-          cat > "$WORK/cbld.toml" <<'EOF'
+          cat > "$WORK/cbld.toml" <<EOF
           [package]
           name = "overlay_probe"
           version = "0.1.0"
@@ -146,9 +158,9 @@ jobs:
           standard = "c++17"
 
           [dependencies]
-          "gh:nlohmann/json" = "3.11.3"
-          "gh:DaveGamble/cJSON" = "1.7.18"
-          "gh:fmtlib/fmt" = "11.2.0"
+          "gh:nlohmann/json" = "${{ matrix.json }}"
+          "gh:DaveGamble/cJSON" = "${{ matrix.cjson }}"
+          "gh:fmtlib/fmt" = "${{ matrix.fmt }}"
           EOF
           cat > "$WORK/src/main.cpp" <<'EOF'
           #include <cJSON.h>

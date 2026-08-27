@@ -6,7 +6,7 @@ Overlay recipes for upstream trees that have no `cbld.toml`, plus header-only pa
 
 - `[package] kind = "header"` — include-only dependency: no `.a`, just `-I`
 - Overlay recipes in the package index (builtin `registry/cbld-libs.toml`); clone upstream as-is; a `cbld.toml` in the clone always wins
-- Recipes shipped for `gh:nlohmann/json`, `gh:DaveGamble/cJSON`, `gh:fmtlib/fmt` — listed by `cbld doctor` and on the Packages docs page
+- Recipes shipped for `gh:nlohmann/json`, `gh:DaveGamble/cJSON`, `gh:fmtlib/fmt` — listed by `cbld doctor` and on the Packages docs page. CI builds previous pins (`3.11.3` / `1.7.18` / `11.2.0`) and current tags (`3.12.0` / `1.7.19` / `12.2.0`)
 - Link dependency archives into the consumer executable (compiled libs actually resolve at link time)
 - `cbld sync` still requires `CBLD_LIBS_URL`; the three builtin recipes work without it. Index file may be TOML or the legacy `shorthand <url>` lines
 - Install fallback tags aligned to `v0.4.0`
