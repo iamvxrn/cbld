@@ -13,6 +13,7 @@ use std::process::Command;
 use crate::error::Result;
 use crate::json::Json;
 use crate::manifest::{Manifest, ToolchainSpec};
+use crate::recipe::PackageIndex;
 
 /// One diagnostic check and its outcome.
 struct Check {
@@ -38,6 +39,7 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
         check_fetch_tool(),
         check_system_headers(),
         check_cbld_home(),
+        check_overlay_recipes(),
     ];
     if let Some(toolchain) = check_toolchain_pin() {
         checks.push(toolchain);
@@ -402,6 +404,27 @@ fn check_cbld_home() -> Check {
     }
 }
 
+/// Builtin overlay recipes (nlohmann/json, cJSON, fmt). Always succeeds when
+/// the binary was built with `registry/cbld-libs.toml`; lists the shorthands
+/// a consumer can put in `[dependencies]` without a fork.
+fn check_overlay_recipes() -> Check {
+    let names = PackageIndex::builtin().overlay_shorthands();
+    if names.is_empty() {
+        return Check {
+            name: "recipes",
+            ok: false,
+            detail: "no overlay recipes in this binary".to_string(),
+            fix: Some("rebuild cbld from a tree that contains registry/cbld-libs.toml".into()),
+        };
+    }
+    Check {
+        name: "recipes",
+        ok: true,
+        detail: format!("{} overlay(s): {}", names.len(), names.join(", ")),
+        fix: None,
+    }
+}
+
 fn install_hint_clang() -> String {
     match std::env::consts::OS {
         "macos" => "install LLVM: `brew install llvm`".to_string(),
@@ -472,5 +495,14 @@ mod tests {
         // This crate's own repo root has no cbld.toml, so running the test
         // suite from anywhere under it must see no pin.
         assert!(check_toolchain_pin().is_none());
+    }
+
+    #[test]
+    fn overlay_recipes_check_lists_the_three_official_shorthands() {
+        let c = check_overlay_recipes();
+        assert!(c.ok, "{}", c.detail);
+        assert!(c.detail.contains("gh:nlohmann/json"), "{}", c.detail);
+        assert!(c.detail.contains("gh:DaveGamble/cJSON"), "{}", c.detail);
+        assert!(c.detail.contains("gh:fmtlib/fmt"), "{}", c.detail);
     }
 }

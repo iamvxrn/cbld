@@ -53,18 +53,18 @@ The optional argument is the **package name** (last path segment of `gh:owner/re
 
 ## `sync`
 
-Download a flat-text package index into `~/.cbld/cbld-libs`.
+Download a package index into `~/.cbld/cbld-libs` (TOML overlay recipes or legacy `shorthand <url>` lines). Overlay recipes for `nlohmann/json`, `cJSON`, and `fmt` already ship in the binary.
 
 ```bash
-export CBLD_LIBS_URL=https://example.com/cbld-libs
+export CBLD_LIBS_URL=https://example.com/cbld-libs.toml
 cbld sync
 ```
 
-Requires `CBLD_LIBS_URL`. There is no default public registry. Host `registry/cbld-libs` yourself if you need shorthand aliases beyond `gh:`.
+Requires `CBLD_LIBS_URL`. There is no default public registry. Overlay recipes for the libraries on [Packages](/packages) already ship in the binary. Host `registry/cbld-libs.toml` yourself to add or override recipes. The site still serves the legacy line-format [`/cbld-libs`](/cbld-libs) and the TOML copy [`/cbld-libs.toml`](/cbld-libs.toml).
 
 ## `doctor`
 
-Diagnose the local toolchain (`clang`, archiver, headers, fetch tools).
+Diagnose the local toolchain (`clang`, archiver, headers, fetch tools) and list builtin overlay recipes.
 
 ```bash
 cbld doctor

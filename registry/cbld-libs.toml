@@ -1,0 +1,29 @@
+# Overlay recipes for upstream trees that have no cbld.toml.
+# Clone is still the upstream git URL. A cbld.toml in the clone always wins.
+#
+# This is not a public package registry. Host this file yourself and:
+#   export CBLD_LIBS_URL=<url-to-this-file>
+#   cbld sync
+# cbld also ships these recipes built-in, so the three entries below
+# resolve without syncing.
+#
+# Legacy line format (`shorthand <url>`) is still accepted in ~/.cbld/cbld-libs.
+
+["gh:nlohmann/json"]
+git = "https://github.com/nlohmann/json.git"
+kind = "header"
+include_dirs = ["include"]
+
+["gh:DaveGamble/cJSON"]
+git = "https://github.com/DaveGamble/cJSON.git"
+kind = "lib"
+source_dir = "."
+include = ["cJSON.c"]
+include_dirs = ["."]
+exclude = ["tests/**", "fuzzing/**"]
+
+["gh:fmtlib/fmt"]
+git = "https://github.com/fmtlib/fmt.git"
+kind = "lib"
+include_dirs = ["include"]
+include = ["format.cc", "os.cc"]

@@ -11,6 +11,7 @@ on:
       - "install.ps1"
       - "uninstall.sh"
       - "uninstall.ps1"
+      - "registry/**"
       - ".github/workflows/**"
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - "install.ps1"
       - "uninstall.sh"
       - "uninstall.ps1"
+      - "registry/**"
       - ".github/workflows/**"
 
 env:
@@ -102,3 +104,68 @@ jobs:
       - name: cbld doctor (sanity check)
         shell: bash
         run: cargo run --quiet -- doctor
+
+  recipes:
+    name: overlay recipes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+          clang --version
+
+      - name: cargo build
+        run: cargo build --verbose
+
+      - name: Build nlohmann/json, cJSON, fmt from upstream
+        shell: bash
+        env:
+          CBLD_HOME: ${{ runner.temp }}/cbld-home
+        run: |
+          set -euo pipefail
+          BIN="$(pwd)/target/debug/cbld"
+          WORK="${{ runner.temp }}/overlay-probe"
+          mkdir -p "$WORK/src"
+          cat > "$WORK/cbld.toml" <<'EOF'
+          [package]
+          name = "overlay_probe"
+          version = "0.1.0"
+
+          [profile.cpp]
+          standard = "c++17"
+
+          [dependencies]
+          "gh:nlohmann/json" = "3.11.3"
+          "gh:DaveGamble/cJSON" = "1.7.18"
+          "gh:fmtlib/fmt" = "11.2.0"
+          EOF
+          cat > "$WORK/src/main.cpp" <<'EOF'
+          #include <cJSON.h>
+          #include <fmt/core.h>
+          #include <nlohmann/json.hpp>
+
+          int main() {
+            nlohmann::json j = {{"ok", true}};
+            cJSON* c = cJSON_Parse("{\"ok\":true}");
+            if (!c) {
+              return 1;
+            }
+            cJSON_Delete(c);
+            fmt::print("{}\n", j.dump());
+            return 0;
+          }
+          EOF
+          "$BIN" build --manifest-path "$WORK"
+          "$WORK/target/debug/overlay_probe"
+

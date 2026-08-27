@@ -24,10 +24,33 @@ Behind the scenes, cbld:
 3. Compiles sources with Clang.
 4. Links and runs the binary (`cbld run`).
 
-## 3. Check your toolchain
+## 3. Depend on an upstream library
+
+Overlay recipes ship for a few trees that have no `cbld.toml`. Clone is unmodified. See [Packages](/packages).
+
+```toml
+[dependencies]
+"gh:nlohmann/json" = "3.11.3"
+```
+
+```cpp
+#include <nlohmann/json.hpp>
+#include <iostream>
+
+int main() {
+    nlohmann::json j = {{"hello", "cbld"}};
+    std::cout << j.dump() << std::endl;
+}
+```
+
+```bash
+cbld run
+```
+
+## 4. Check your toolchain
 
 ```bash
 cbld doctor
 ```
 
-Verifies `clang`, `ar`, and required headers on your system.
+Verifies `clang`, `ar`, headers, and lists the builtin overlay recipes.

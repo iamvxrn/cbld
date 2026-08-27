@@ -39,7 +39,7 @@ exceptions = true
 | `include_dirs` | Extra `-I` paths relative to package root |
 | `defines` | Project-wide `-D` defines for C and C++ |
 | `ignore_warnings` | Inject `-w` for all translation units |
-| `kind` | `bin` / `lib` when the entry file name does not imply the artifact type |
+| `kind` | `bin` / `lib` when the entry file name does not imply the artifact type; `header` for include-only (no archive) |
 | `include` / `exclude` | Glob patterns to narrow the source scan |
 
 ## Profiles
@@ -50,6 +50,7 @@ exceptions = true
 ## Dependencies and features
 
 - `[dependencies]` — keys like `gh:owner/repo`. Value is a version string or `{ version, features, tag }`. `tag` overrides the git tag when it differs from `version`. `features` are passed into that dependency when compiling it.
+- Upstream trees without a `cbld.toml` can still build when an **overlay recipe** exists. The official list is on [Packages](/packages). The clone is unmodified; a `cbld.toml` in the clone always wins over the recipe.
 - `[features]` — named groups that expand to extra `-DCBLD_FEATURE_<NAME>` defines. They do **not** turn dependencies on or off.
 
 ## Workspace

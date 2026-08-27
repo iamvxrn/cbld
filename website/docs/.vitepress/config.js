@@ -21,6 +21,7 @@ export default defineConfig({
           { text: 'Overview', link: '/overview' },
           { text: 'Install', link: '/install' },
           { text: 'Quickstart', link: '/quickstart' },
+          { text: 'Packages', link: '/packages' },
         ]
       },
       {

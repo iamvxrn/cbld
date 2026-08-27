@@ -99,12 +99,14 @@ pub struct Package {
     pub ignore_warnings: bool,
 
     // --- Artifact kind and scan globs ------------------------------------
-    /// Artifact kind: `"bin"` (executable) or `"lib"` (library). When set,
-    /// cbld no longer requires a canonically-named `main.*`/`lib.*` entry
-    /// file — real libraries whose sources are named `cJSON.c` or `format.cc`
-    /// build as-is. Unset (the default) keeps the strict behavior: the entry
-    /// file's name decides the kind. Accepts `bin`/`exe`/`executable` and
-    /// `lib`/`library` (see `Crate::parse`).
+    /// Artifact kind: `"bin"` (executable), `"lib"` (library), or `"header"`
+    /// (include-only, no archive). When set to `bin`/`lib`, cbld no longer
+    /// requires a canonically-named `main.*`/`lib.*` entry file — real
+    /// libraries whose sources are named `cJSON.c` or `format.cc` build as-is.
+    /// `header` skips compilation entirely. Unset (the default) keeps the
+    /// strict behavior: the entry file's name decides the kind. Accepts
+    /// `bin`/`exe`/`executable`, `lib`/`library`, and `header`/`header-only`
+    /// (see `Crate::parse`).
     #[serde(default)]
     pub kind: Option<String>,
     /// Glob patterns (relative to `source_dir`) that restrict the scan: when

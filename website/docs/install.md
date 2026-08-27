@@ -38,7 +38,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://cbld.pages.dev/uninstall.ps1"
 cbld doctor
 ```
 
-`doctor` requires Clang. `cbld build` can fall back to `gcc`, `tcc`, or `zig cc` if Clang is missing, but that path is not what doctor validates.
+`doctor` requires Clang. It also lists builtin overlay recipes (see [Packages](/packages)). `cbld build` can fall back to `gcc`, `tcc`, or `zig cc` if Clang is missing, but that path is not what doctor validates.
 
 ## Build from source
 

@@ -22,4 +22,6 @@ graph TD
 
 ## Package index
 
-`cbld sync` downloads a flat-text shorthand → URL map into `~/.cbld/cbld-libs` when `CBLD_LIBS_URL` is set. There is **no public registry**. Built-in `gh:user/repo` shorthands resolve without syncing. See [architecture](/architecture).
+`gh:owner/repo` clones GitHub directly. A short list of upstream trees has overlay recipes in the binary — see [Packages](/packages). Clone as-is; a `cbld.toml` in the clone always wins.
+
+`cbld sync` downloads an index into `~/.cbld/cbld-libs` when `CBLD_LIBS_URL` is set (TOML recipes or legacy `shorthand <url>` lines). There is **no public registry**. See [architecture](/architecture).

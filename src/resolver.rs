@@ -1,8 +1,8 @@
 //! Dependency resolution.
 //!
 //! Responsibilities:
-//!   * Translate `gh:user/lib` shorthands into real repository URLs using the
-//!     local mapping database `~/.cbld/cbld-libs`.
+//!   * Translate `gh:user/lib` shorthands into real repository URLs using
+//!     overlay recipes (builtin + `~/.cbld/cbld-libs`) and the `gh:` heuristic.
 //!   * Clone (or reuse) dependencies in the global cache `~/.cbld/cache/` at a
 //!     specific tag, via the system `git` binary (with `curl` as a probe/
 //!     fallback for reachability checks).
@@ -11,13 +11,14 @@
 //! The resolver shells out to real `git`/`curl` rather than embedding a VCS
 //! library — this keeps the binary small and matches cbld's design.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CbldError, IoPathExt, Result};
 use crate::manifest::{Dependency, LockedDependency, Lockfile, Manifest};
+use crate::recipe::PackageIndex;
 
 /// A single resolved dependency, ready to be built and recorded.
 #[derive(Debug, Clone)]
@@ -54,8 +55,8 @@ pub struct Resolver {
     home: PathBuf,
     /// `~/.cbld/cache`
     cache: PathBuf,
-    /// Parsed contents of `~/.cbld/cbld-libs`: shorthand -> url.
-    mappings: BTreeMap<String, String>,
+    /// Parsed overlay recipes + URL mappings (builtin, then ~/.cbld/cbld-libs).
+    index: PackageIndex,
     verbose: bool,
 }
 
@@ -65,11 +66,11 @@ impl Resolver {
         let home = cbld_home()?;
         let cache = home.join("cache");
         fs::create_dir_all(&cache).path_ctx(&cache)?;
-        let mappings = load_mappings(&home)?;
+        let index = PackageIndex::load()?;
         Ok(Resolver {
             home,
             cache,
-            mappings,
+            index,
             verbose,
         })
     }
@@ -134,7 +135,7 @@ impl Resolver {
         let mut resolved = self.resolve_one(shorthand, dep, locked)?;
         resolved.features = dep.features.clone();
 
-        let sub_manifest = Manifest::load(&resolved.cache_path)?;
+        let sub_manifest = self.effective_manifest(&resolved)?;
         for (child_key, child_dep) in &sub_manifest.dependencies {
             self.resolve_tree(child_key, child_dep, lock, visiting, done, out)?;
         }
@@ -174,8 +175,9 @@ impl Resolver {
             _ => self.head_sha(&dest)?,
         };
 
-        // Read the dependency's own manifest to discover transitive edges.
-        let sub_deps = self.direct_dependency_names(&dest)?;
+        // Read the dependency's own (or overlay) manifest to discover
+        // transitive edges.
+        let sub_deps = self.direct_dependency_names(shorthand, &url, &name, &dep.version, &dest)?;
 
         Ok(ResolvedDep {
             name,
@@ -193,11 +195,12 @@ impl Resolver {
     /// Translate a `gh:user/lib` shorthand into a concrete URL.
     ///
     /// Resolution order:
-    ///   1. Exact match in the `cbld-libs` mapping file.
+    ///   1. Overlay / mapping entry in the package index (builtin recipes,
+    ///      then `~/.cbld/cbld-libs`).
     ///   2. Built-in heuristic for the `gh:` prefix -> github.com.
     fn map_shorthand(&self, shorthand: &str) -> Result<String> {
-        if let Some(url) = self.mappings.get(shorthand) {
-            return Ok(url.clone());
+        if let Some(url) = self.index.git_url(shorthand) {
+            return Ok(url.to_string());
         }
         if let Some(rest) = shorthand.strip_prefix("gh:") {
             if rest.split('/').count() == 2 && !rest.is_empty() {
@@ -208,6 +211,16 @@ impl Resolver {
             "no mapping for '{shorthand}' in {} and it is not a recognized shorthand",
             self.home.join("cbld-libs").display()
         )))
+    }
+
+    pub(crate) fn effective_manifest(&self, dep: &ResolvedDep) -> Result<Manifest> {
+        self.index.effective_manifest(
+            &dep.cache_path,
+            &dep.shorthand,
+            &dep.url,
+            &dep.name,
+            &dep.version,
+        )
     }
 
     /// Make sure `dest` contains a clone of `url` checked out at the requested
@@ -339,16 +352,18 @@ impl Resolver {
         Ok(output.trim().to_string())
     }
 
-    /// Inspect a cached dependency's own `cbld.toml` for its direct deps.
-    fn direct_dependency_names(&self, repo: &Path) -> Result<Vec<String>> {
-        let manifest_path = repo.join("cbld.toml");
-        if !manifest_path.exists() {
-            return Err(CbldError::NotCbldStandard {
-                path: repo.to_path_buf(),
-                reason: "missing cbld.toml".to_string(),
-            });
-        }
-        let sub = Manifest::load(repo)?;
+    /// Inspect a cached dependency's overlay or `cbld.toml` for its direct deps.
+    fn direct_dependency_names(
+        &self,
+        shorthand: &str,
+        git_url: &str,
+        name: &str,
+        version: &str,
+        repo: &Path,
+    ) -> Result<Vec<String>> {
+        let sub = self
+            .index
+            .effective_manifest(repo, shorthand, git_url, name, version)?;
         let mut names: Vec<String> = sub.dependencies.keys().map(|k| package_name(k)).collect();
         names.sort();
         Ok(names)
@@ -409,22 +424,24 @@ impl Resolver {
         }
     }
 
-    /// Refresh `~/.cbld/cbld-libs` from the registry's flat-text index.
+    /// Refresh `~/.cbld/cbld-libs` from the registry index.
     ///
-    /// Deliberately shells out to whatever native fetch tool the OS already
-    /// has — PowerShell's `Invoke-WebRequest` on Windows, `curl` (falling
-    /// back to `wget`) elsewhere — instead of linking an HTTP client crate.
-    /// That keeps the dependency tree and compile times exactly as small as
-    /// the rest of cbld.
+    /// Accepts TOML overlay recipes or the legacy `shorthand <url>` line
+    /// format. Deliberately shells out to whatever native fetch tool the OS
+    /// already has — PowerShell's `Invoke-WebRequest` on Windows, `curl`
+    /// (falling back to `wget`) elsewhere — instead of linking an HTTP client
+    /// crate. That keeps the dependency tree and compile times exactly as
+    /// small as the rest of cbld.
     pub fn sync_index(&self, quiet: bool) -> Result<()> {
         let url = match std::env::var("CBLD_LIBS_URL") {
             Ok(v) if !v.trim().is_empty() => v,
             _ => {
                 return Err(CbldError::Config(
-                    "no package index URL configured — set CBLD_LIBS_URL to a flat-text \
-                     index (shorthand + URL per line). A public cbld registry is not \
-                     published yet; `gh:user/repo` shorthands still resolve via built-in \
-                     heuristics without `cbld sync`"
+                    "no package index URL configured — set CBLD_LIBS_URL to a TOML \
+                     recipe index (or a legacy shorthand+URL file). A public cbld \
+                     registry is not published; overlay recipes for nlohmann/json, \
+                     cJSON, and fmt ship built-in, and `gh:user/repo` still resolves \
+                     without `cbld sync`"
                         .into(),
                 ));
             }
@@ -591,43 +608,6 @@ pub(crate) fn cbld_home() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cbld"))
 }
 
-/// Parse `~/.cbld/cbld-libs`.
-///
-/// Format is line-oriented: `shorthand <whitespace> url`, with `#` comments
-/// and blank lines ignored. Missing file is treated as an empty table so cbld
-/// still works with built-in `gh:` heuristics.
-fn load_mappings(home: &Path) -> Result<BTreeMap<String, String>> {
-    let path = home.join("cbld-libs");
-    let mut map = BTreeMap::new();
-    if !path.exists() {
-        return Ok(map);
-    }
-    let text = fs::read_to_string(&path).path_ctx(&path)?;
-    for (lineno, raw) in text.lines().enumerate() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.split_whitespace();
-        let key = parts.next();
-        let url = parts.next();
-        match (key, url) {
-            (Some(k), Some(u)) => {
-                map.insert(k.to_string(), u.to_string());
-            }
-            _ => {
-                return Err(CbldError::Resolution(format!(
-                    "malformed mapping in {} on line {}: '{}'",
-                    path.display(),
-                    lineno + 1,
-                    raw
-                )));
-            }
-        }
-    }
-    Ok(map)
-}
-
 /// Run a command and capture stdout as a String, mapping errors to CbldError.
 fn run_capture(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
@@ -696,5 +676,25 @@ mod tests {
     fn package_name_takes_last_segment_without_git_suffix() {
         assert_eq!(package_name("gh:iamvxrn/json"), "json");
         assert_eq!(package_name("gh:user/http_parser.git"), "http_parser");
+    }
+
+    #[test]
+    fn builtin_recipe_maps_nlohmann_json_without_cbld_libs_file() {
+        let prev_home = std::env::var("CBLD_HOME").ok();
+        let home =
+            std::env::temp_dir().join(format!("cbld-builtin-map-{}-{}", std::process::id(), "idx"));
+        let _ = fs::remove_dir_all(&home);
+        std::env::set_var("CBLD_HOME", &home);
+
+        let resolver = Resolver::new(false).expect("resolver");
+        let url = resolver.map_shorthand("gh:nlohmann/json").unwrap();
+        assert_eq!(url, "https://github.com/nlohmann/json.git");
+
+        if let Some(v) = prev_home {
+            std::env::set_var("CBLD_HOME", v);
+        } else {
+            std::env::remove_var("CBLD_HOME");
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0] - 2026-08-27
+
+Overlay recipes for upstream trees that have no `cbld.toml`, plus header-only packages.
+
+- `[package] kind = "header"` — include-only dependency: no `.a`, just `-I`
+- Overlay recipes in the package index (builtin `registry/cbld-libs.toml`); clone upstream as-is; a `cbld.toml` in the clone always wins
+- Recipes shipped for `gh:nlohmann/json`, `gh:DaveGamble/cJSON`, `gh:fmtlib/fmt` — listed by `cbld doctor` and on the Packages docs page
+- Link dependency archives into the consumer executable (compiled libs actually resolve at link time)
+- `cbld sync` still requires `CBLD_LIBS_URL`; the three builtin recipes work without it. Index file may be TOML or the legacy `shorthand <url>` lines
+- Install fallback tags aligned to `v0.4.0`
+
 ## [0.3.1] - 2026-08-26
 
 Correctness and docs: the 0.3.0 graph, installers, and site had drifted.

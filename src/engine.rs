@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use crate::compdb::CompileCommandEntry;
 use crate::compiler::{CompileUnit, Compiler, Language, LinkCommand};
-use crate::error::{CompileDiagnostic, CbldError, IoPathExt, Result};
+use crate::error::{CbldError, CompileDiagnostic, IoPathExt, Result};
 use crate::hash;
 use crate::manifest::{Manifest, Package};
 use crate::resolver;
@@ -26,11 +26,13 @@ use crate::trace;
 /// What kind of artifact a package produces. Normally decided by which entry
 /// file the layout contains (`main.*` → executable, `lib.*` → library), but
 /// overridable via `[package] kind` for trees whose sources aren't
-/// canonically named.
+/// canonically named. `Header` is include-only: no translation units, no
+/// archive — the consumer just gets `-I` paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crate {
     Executable,
     Library,
+    Header,
 }
 
 impl Crate {
@@ -39,8 +41,9 @@ impl Crate {
         match raw.trim().to_ascii_lowercase().as_str() {
             "bin" | "exe" | "executable" | "binary" => Ok(Crate::Executable),
             "lib" | "library" | "staticlib" | "static" => Ok(Crate::Library),
+            "header" | "headers" | "header-only" | "hdr" => Ok(Crate::Header),
             other => Err(CbldError::Config(format!(
-                "unknown [package] kind '{other}' (expected 'bin' or 'lib')"
+                "unknown [package] kind '{other}' (expected 'bin', 'lib', or 'header')"
             ))),
         }
     }
@@ -56,6 +59,8 @@ pub struct ScanConfig {
     /// Explicit artifact kind (`[package] kind`). When set, cbld skips
     /// canonical-entry discovery entirely, so a directory of arbitrarily-named
     /// sources (`cJSON.c`, `format.cc`) builds without a `main.*`/`lib.*` file.
+    /// `Header` also skips the `source_dir` requirement — there is nothing
+    /// to compile.
     pub kind: Option<Crate>,
     /// `[package] include` globs (relative to `source_dir`): when non-empty,
     /// only matching files are compiled.
@@ -111,6 +116,18 @@ impl Layout {
     /// declared artifact, so a real library named `cJSON.c` builds as-is. The
     /// one-language-per-package rule is unchanged throughout.
     pub fn discover(root: &Path, cfg: &ScanConfig) -> Result<Layout> {
+        if cfg.kind == Some(Crate::Header) {
+            return Ok(Layout {
+                root: root.to_path_buf(),
+                src: root.join(&cfg.source_dir),
+                entry: None,
+                entry_language: Language::Cpp,
+                crate_kind: Crate::Header,
+                include: cfg.include.clone(),
+                exclude: cfg.exclude.clone(),
+            });
+        }
+
         let src = root.join(&cfg.source_dir);
         if !src.is_dir() {
             return Err(CbldError::LayoutViolation(format!(
@@ -137,8 +154,8 @@ impl Layout {
                     CbldError::LayoutViolation(format!(
                         "no entry point found under {sd}/ and no [package] kind declared. \
                          Either add {sd}/main.<ext> or {sd}/lib.<ext>, or set \
-                         kind = \"bin\" | \"lib\" in [package] to build a directory of \
-                         arbitrarily-named sources.",
+                         kind = \"bin\" | \"lib\" | \"header\" in [package] to build a directory of \
+                         arbitrarily-named sources (or an include-only tree).",
                         sd = cfg.source_dir
                     ))
                 })?;
@@ -210,8 +227,12 @@ impl Layout {
 
     /// A copy of this layout forced to build as a library. Dependencies are
     /// always archived and linked into the consumer regardless of whether they
-    /// expose a `main.*` entry of their own.
+    /// expose a `main.*` entry of their own. Header-only packages stay
+    /// header-only — there is nothing to archive.
     pub fn as_library(&self) -> Layout {
+        if self.crate_kind == Crate::Header {
+            return self.clone();
+        }
         Layout {
             crate_kind: Crate::Library,
             ..self.clone()
@@ -383,8 +404,23 @@ impl Engine {
         target_dir: &Path,
         output_name: Option<&str>,
         release: bool,
+        dep_archives: &[PathBuf],
     ) -> Result<BuiltArtifact> {
         compiler.validate()?;
+
+        if layout.crate_kind == Crate::Header {
+            if !self.quiet {
+                println!(
+                    "\x1b[1;32m     Header\x1b[0m {} v{} (include-only, no archive)",
+                    package.name, package.version
+                );
+            }
+            return Ok(BuiltArtifact {
+                path: layout.root.join("include"),
+                cache_hit: false,
+                compile_commands: Vec::new(),
+            });
+        }
 
         let profile_dir = target_dir.join(if release { "release" } else { "debug" });
         let obj_dir = profile_dir.join("obj").join(&package.name);
@@ -392,10 +428,7 @@ impl Engine {
 
         let sources = layout.collect_sources()?;
         if sources.is_empty() {
-            let rel = layout
-                .src
-                .strip_prefix(&layout.root)
-                .unwrap_or(&layout.src);
+            let rel = layout.src.strip_prefix(&layout.root).unwrap_or(&layout.src);
             return Err(CbldError::LayoutViolation(format!(
                 "package '{}' has no source files under {}/",
                 package.name,
@@ -504,8 +537,16 @@ impl Engine {
             fs::create_dir_all(parent).path_ctx(parent)?;
         }
 
+        // Static archives of dependencies are linked only into executables.
+        // GNU ld / lld are single-pass: dependents must appear before the
+        // libraries they need, so the caller collects archives in reverse
+        // topological order (see `build_dependencies`).
+        let mut link_inputs = objects;
+        if layout.crate_kind == Crate::Executable {
+            link_inputs.extend(dep_archives.iter().cloned());
+        }
         let link = compiler.link_command(
-            &objects,
+            &link_inputs,
             &artifact,
             has_cpp,
             layout.crate_kind == Crate::Library,
@@ -516,6 +557,7 @@ impl Engine {
             let kind = match layout.crate_kind {
                 Crate::Executable => "executable",
                 Crate::Library => "library",
+                Crate::Header => "header",
             };
             println!(
                 "\x1b[1;32m    Finished\x1b[0m {} {} [{}]",
@@ -762,6 +804,7 @@ impl Engine {
                 let verb = match kind {
                     Crate::Executable => "Linking",
                     Crate::Library => "Archiving",
+                    Crate::Header => "Header",
                 };
                 println!("\x1b[1;32m     {verb}\x1b[0m via {}", link.program);
             }
@@ -1106,6 +1149,7 @@ fn artifact_path(
                 format!("lib{name}.a")
             }
         }
+        Crate::Header => name.to_string(),
     };
     profile_dir.join(filename)
 }
@@ -1261,6 +1305,32 @@ mod tests {
         fs::remove_dir_all(&tmp).ok();
     }
 
+    /// Header-only packages do not need a source directory: there is nothing
+    /// to compile. `as_library` must not promote them into an archive.
+    #[test]
+    fn kind_header_does_not_require_a_source_directory() {
+        let tmp = std::env::temp_dir().join(format!("cbld-header-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("include").join("nlohmann")).unwrap();
+        fs::write(
+            tmp.join("include").join("nlohmann").join("json.hpp"),
+            "#pragma once\n",
+        )
+        .unwrap();
+
+        let cfg = ScanConfig {
+            source_dir: "src".to_string(),
+            kind: Some(Crate::Header),
+            ..ScanConfig::default()
+        };
+        let layout = Layout::discover(&tmp, &cfg).unwrap();
+        assert_eq!(layout.crate_kind, Crate::Header);
+        assert_eq!(layout.as_library().crate_kind, Crate::Header);
+        assert!(Crate::parse("header-only").unwrap() == Crate::Header);
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
     /// 0.7 — `exclude` globs prune a vendored repo's tests/fuzzers so they
     /// aren't swept into the library; `include` further narrows the scan.
     #[test]
@@ -1335,7 +1405,7 @@ mod tests {
         let target_dir = project.join("target");
 
         let first = engine
-            .build_package(&layout, &package, &compiler, &target_dir, None, false)
+            .build_package(&layout, &package, &compiler, &target_dir, None, false, &[])
             .unwrap();
         assert!(
             !first.cache_hit,
@@ -1347,7 +1417,7 @@ mod tests {
         fs::remove_dir_all(&target_dir).unwrap();
 
         let second = engine
-            .build_package(&layout, &package, &compiler, &target_dir, None, false)
+            .build_package(&layout, &package, &compiler, &target_dir, None, false, &[])
             .unwrap();
         assert!(
             second.cache_hit,
@@ -1360,6 +1430,111 @@ mod tests {
             None => std::env::remove_var("CBLD_HOME"),
         }
         let _ = fs::remove_dir_all(&project);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Dependency archives must actually reach the executable link line.
+    /// Header-only deps are a no-op here; compiled libs (cJSON, fmt) are not.
+    #[test]
+    fn executable_links_dependency_archives() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!("skipping: clang not available in this environment");
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let pid = std::process::id();
+        let root = std::env::temp_dir().join(format!("cbld-engine-link-{pid}"));
+        let home = std::env::temp_dir().join(format!("cbld-engine-link-home-{pid}"));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&home);
+        let prev_home = std::env::var("CBLD_HOME").ok();
+        std::env::set_var("CBLD_HOME", &home);
+
+        let lib_root = root.join("lib");
+        let exe_root = root.join("app");
+        fs::create_dir_all(&lib_root).unwrap();
+        fs::create_dir_all(exe_root.join("src")).unwrap();
+
+        let (lib_layout, lib_pkg) = make_library_package(&lib_root, "add");
+        let lib_compiler = Compiler::new(
+            CProfile::default(),
+            CppProfile::default(),
+            &lib_root,
+            Vec::new(),
+            &[],
+            false,
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let engine = Engine::new(1, false, true, false, false);
+        let lib_built = engine
+            .build_package(
+                &lib_layout,
+                &lib_pkg,
+                &lib_compiler,
+                &lib_root.join("target"),
+                None,
+                false,
+                &[],
+            )
+            .unwrap();
+        assert!(lib_built.path.is_file());
+
+        fs::write(
+            exe_root.join("src").join("main.c"),
+            "int cbld_add(int, int);\nint main(void) { return cbld_add(2, 3) == 5 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        let exe_layout = Layout::discover(&exe_root, &ScanConfig::strict("src")).unwrap();
+        let exe_pkg = Package {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            description: None,
+            authors: Vec::new(),
+            toolchain: None,
+            target: None,
+            source_dir: "src".to_string(),
+            include_dirs: Vec::new(),
+            defines: Vec::new(),
+            ignore_warnings: false,
+            kind: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        };
+        let exe_compiler = Compiler::new(
+            CProfile::default(),
+            CppProfile::default(),
+            &exe_root,
+            Vec::new(),
+            &[],
+            false,
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let exe_built = engine
+            .build_package(
+                &exe_layout,
+                &exe_pkg,
+                &exe_compiler,
+                &exe_root.join("target"),
+                None,
+                false,
+                std::slice::from_ref(&lib_built.path),
+            )
+            .unwrap();
+        let status = Command::new(&exe_built.path).status().unwrap();
+        assert!(status.success(), "linked executable should run");
+
+        match prev_home {
+            Some(v) => std::env::set_var("CBLD_HOME", v),
+            None => std::env::remove_var("CBLD_HOME"),
+        }
+        let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&home);
     }
 

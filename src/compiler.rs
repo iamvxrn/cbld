@@ -31,7 +31,11 @@ impl Language {
     /// The compiler driver to invoke for this language (auto-detects clang -> gcc -> cc).
     pub fn driver(self) -> &'static str {
         for &candidate in self.driver_candidates() {
-            if std::process::Command::new(candidate).arg("--version").output().is_ok() {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
                 return candidate;
             }
         }

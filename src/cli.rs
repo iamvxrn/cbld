@@ -62,10 +62,11 @@ pub enum Command {
 
     /// Refresh the local package index (~/.cbld/cbld-libs) from a remote index.
     ///
-    /// Requires `CBLD_LIBS_URL` (no default registry is published yet). Touches
-    /// only that one flat-text index file via native OS fetch tools. Never
-    /// resolves dependencies, never touches a project's `cbld.lock` — see
-    /// `Update` for that.
+    /// Requires `CBLD_LIBS_URL`. Touches only that one index file via native
+    /// OS fetch tools (TOML recipes or the legacy `shorthand <url>` format).
+    /// Never resolves dependencies, never touches a project's `cbld.lock` —
+    /// see `Update` for that. A handful of overlay recipes ship built-in and
+    /// work without syncing.
     Sync,
 
     /// Generate a starter cbld.toml from an existing build system's config.

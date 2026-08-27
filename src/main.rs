@@ -15,6 +15,7 @@ mod hash;
 mod json;
 mod manifest;
 mod migrate;
+mod recipe;
 mod resolver;
 mod trace;
 
@@ -28,6 +29,7 @@ use engine::{default_jobs, require_package, Crate, Engine, Layout, ScanConfig};
 use error::{CbldError, IoPathExt, Result};
 use json::Json;
 use manifest::{Dependency, Lockfile, Manifest, Package, ToolchainSpec};
+use recipe::PackageIndex;
 use resolver::{build_lockfile, package_name, ResolvedDep, Resolver};
 
 fn main() {
@@ -279,7 +281,7 @@ fn build_single(
 
     // Build dependencies first so their archives/headers exist.
     let target_dir = root.join("target");
-    let (dep_includes, dep_cache_hits, dep_compile_commands) =
+    let (dep_includes, dep_archives, dep_cache_hits, dep_compile_commands) =
         build_dependencies(&resolved, args, verbose, quiet, json, target.as_deref())?;
 
     // --- Compile the root package ----------------------------------------
@@ -317,6 +319,7 @@ fn build_single(
         &target_dir,
         args.output.as_deref(),
         args.release,
+        &dep_archives,
     )?;
 
     let mut compile_commands = dep_compile_commands;
@@ -377,7 +380,9 @@ fn vendored_dependencies(root: &Path, manifest: &Manifest) -> Result<Option<Vec<
         std::collections::BTreeMap::new();
     merge_requested_features(&mut feature_map, &manifest.dependencies);
     for r in &resolved {
-        if let Ok(m) = Manifest::load(&r.cache_path) {
+        if let Ok(m) = PackageIndex::load().and_then(|idx| {
+            idx.effective_manifest(&r.cache_path, &r.shorthand, &r.url, &r.name, &r.version)
+        }) {
             merge_requested_features(&mut feature_map, &m.dependencies);
         }
     }
@@ -448,7 +453,8 @@ fn build_workspace(
 }
 
 /// Build all resolved dependencies and collect their include directories,
-/// how many of them were served from the global build cache, and their
+/// static archives (in reverse topological order for the linker), how many
+/// of them were served from the global build cache, and their
 /// compile_commands.json entries.
 ///
 /// `cross_target` is the *root* package's already-resolved effective target
@@ -463,19 +469,43 @@ fn build_dependencies(
     quiet: bool,
     json: bool,
     cross_target: Option<&str>,
-) -> Result<(Vec<PathBuf>, usize, Vec<compdb::CompileCommandEntry>)> {
+) -> Result<(
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    usize,
+    Vec<compdb::CompileCommandEntry>,
+)> {
     let mut includes = Vec::new();
+    let mut archives = Vec::new();
     let mut cache_hits = 0usize;
     let mut compile_commands = Vec::new();
+    let index = PackageIndex::load()?;
 
     for dep in resolved {
-        // Each dependency must itself be cbld-standard. Load its manifest
-        // first so its own `[package] source_dir` can steer layout discovery
-        // (a dependency may itself be a legacy-layout package).
-        let dep_manifest = Manifest::load(&dep.cache_path)?;
+        // Overlay recipe if the clone has no cbld.toml; a cbld.toml in the
+        // clone always wins.
+        let dep_manifest = index.effective_manifest(
+            &dep.cache_path,
+            &dep.shorthand,
+            &dep.url,
+            &dep.name,
+            &dep.version,
+        )?;
         let dep_package = require_package(&dep_manifest, &dep.cache_path)?;
         let dep_scan = scan_config(None, &dep_package)?;
-        let dep_layout = Layout::assert_cbld_standard(&dep.cache_path, &dep_scan)?;
+        let dep_layout = Layout::discover(&dep.cache_path, &dep_scan)?;
+
+        includes.extend(dependency_include_dirs(&dep.cache_path, &dep_package));
+
+        if dep_layout.crate_kind == Crate::Header {
+            if !quiet {
+                println!(
+                    "\x1b[1;32m     Header\x1b[0m {} v{} (dependency)",
+                    dep.name, dep.version
+                );
+            }
+            continue;
+        }
 
         if !quiet {
             println!(
@@ -516,18 +546,21 @@ fn build_dependencies(
             &dep_target,
             None,
             args.release,
+            &[],
         )?;
         if built.cache_hit {
             cache_hits += 1;
         }
         compile_commands.extend(built.compile_commands);
-
-        // Expose the dependency's src/ as an include path (public headers).
-        includes.push(dep.cache_path.join("src"));
-        includes.push(dep.cache_path.join("include"));
+        archives.push(built.path);
     }
 
-    Ok((includes, cache_hits, compile_commands))
+    // GNU ld / lld are single-pass: the archive that *uses* a symbol must
+    // appear before the archive that *defines* it. `resolved` is topological
+    // (dependencies first), so reverse before handing the list to the linker.
+    archives.reverse();
+
+    Ok((includes, archives, cache_hits, compile_commands))
 }
 
 /// `cbld run`
@@ -583,12 +616,20 @@ fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool) -> Result<()> {
             resolver.resolve_all(&manifest, existing_lock.as_ref())?
         }
     };
+    let index = PackageIndex::load()?;
     let mut include_dirs = package_include_dirs(&root, &package);
-    include_dirs.extend(
-        resolved
-            .iter()
-            .flat_map(|dep| [dep.cache_path.join("src"), dep.cache_path.join("include")]),
-    );
+    for dep in &resolved {
+        let dep_manifest = index.effective_manifest(
+            &dep.cache_path,
+            &dep.shorthand,
+            &dep.url,
+            &dep.name,
+            &dep.version,
+        )?;
+        if let Some(pkg) = dep_manifest.package {
+            include_dirs.extend(dependency_include_dirs(&dep.cache_path, &pkg));
+        }
+    }
 
     let features = manifest.resolve_features(&args.features, args.no_default_features);
     let target = effective_target(args.target.as_deref(), &manifest);
@@ -881,6 +922,15 @@ fn scan_config(cli_from: Option<&Path>, pkg: &Package) -> Result<ScanConfig> {
 /// `include/`; this is how those directories reach clang as `-I<path>`.
 fn package_include_dirs(root: &Path, pkg: &Package) -> Vec<PathBuf> {
     pkg.include_dirs.iter().map(|d| root.join(d)).collect()
+}
+
+/// Include paths a *consumer* of this package should search: the conventional
+/// `src/` and `include/` directories plus any `[package] include_dirs` from
+/// the overlay or the clone's own manifest (cJSON's headers live at `.`).
+fn dependency_include_dirs(root: &Path, pkg: &Package) -> Vec<PathBuf> {
+    let mut dirs = vec![root.join("src"), root.join("include")];
+    dirs.extend(package_include_dirs(root, pkg));
+    dirs
 }
 
 fn short_sha(sha: &str) -> &str {
