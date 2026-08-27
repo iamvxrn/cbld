@@ -66,6 +66,19 @@ impl Language {
         }
     }
 
+    /// True for C/C++ header extensions. Headers are never translation units
+    /// (`from_extension` returns `None`); `cbld fmt` / `cbld lint` still
+    /// visit them.
+    pub fn is_header(path: &Path) -> bool {
+        let Some(raw) = path.extension().and_then(|e| e.to_str()) else {
+            return false;
+        };
+        matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "h" | "hh" | "hpp" | "hxx" | "h++" | "inl"
+        )
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Language::C => "C",
@@ -518,6 +531,46 @@ impl Compiler {
         args
     }
 
+    /// Compiler frontend flags for `clang-tidy -- <args>`. Language dialect,
+    /// include paths, and defines — enough to parse, no codegen.
+    pub fn tidy_frontend_args(&self, language: Language) -> Vec<String> {
+        let mut args = match language {
+            Language::C => {
+                let p = &self.c_profile;
+                vec![
+                    "-x".to_string(),
+                    "c".to_string(),
+                    format!("-std={}", p.standard),
+                ]
+            }
+            Language::Cpp => {
+                let p = &self.cpp_profile;
+                let mut args = vec![
+                    "-x".to_string(),
+                    "c++".to_string(),
+                    format!("-std={}", p.standard),
+                ];
+                if p.rtti {
+                    args.push("-frtti".to_string());
+                } else {
+                    args.push("-fno-rtti".to_string());
+                }
+                if p.exceptions {
+                    args.push("-fexceptions".to_string());
+                } else {
+                    args.push("-fno-exceptions".to_string());
+                }
+                args
+            }
+        };
+        let defines = match language {
+            Language::C => &self.c_profile.defines,
+            Language::Cpp => &self.cpp_profile.defines,
+        };
+        self.push_diagnostics_and_includes(&mut args, defines);
+        args
+    }
+
     /// Flags-only fingerprint for the global build cache: every flag that
     /// affects codegen, with no source/object paths baked in, so the same
     /// flags produce the same cache key regardless of where the project
@@ -903,6 +956,9 @@ mod tests {
             );
         }
         assert_eq!(Language::from_extension(Path::new("foo.h")), None);
+        assert!(Language::is_header(Path::new("foo.h")));
+        assert!(Language::is_header(Path::new("foo.hpp")));
+        assert!(!Language::is_header(Path::new("foo.c")));
     }
 
     /// A capital `.C` is C++ (Unix tradition), and must not collapse into the
@@ -1293,6 +1349,36 @@ mod tests {
         assert!(!unit.args.contains(&"-ftime-trace".to_string()));
         assert!(!unit.args.contains(&"-Wpadded".to_string()));
         assert_eq!(unit.args.last().unwrap(), "src/main.c");
+    }
+
+    #[test]
+    fn tidy_frontend_args_parse_only_no_analyze_or_codegen() {
+        let c = Compiler::new(
+            CProfile::default(),
+            CppProfile {
+                standard: "c++20".to_string(),
+                rtti: false,
+                exceptions: true,
+                ..CppProfile::default()
+            },
+            Path::new("."),
+            vec![PathBuf::from("deps/include")],
+            &[],
+            false,
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let args = c.tidy_frontend_args(Language::Cpp);
+        assert!(args.contains(&"-x".to_string()));
+        assert!(args.contains(&"c++".to_string()));
+        assert!(args.contains(&"-std=c++20".to_string()));
+        assert!(args.contains(&"-fno-rtti".to_string()));
+        assert!(args.contains(&"-fexceptions".to_string()));
+        assert!(!args.contains(&"--analyze".to_string()));
+        assert!(!args.contains(&"-c".to_string()));
+        assert!(args.iter().any(|a| a.contains("deps/include")));
     }
 
     /// Library builds go through the archiver, not the linker — sanitizer

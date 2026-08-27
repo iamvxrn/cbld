@@ -8,6 +8,11 @@ Overlay recipes for upstream trees that have no `cbld.toml`, plus header-only pa
 - Overlay recipes in the package index (builtin `registry/cbld-libs.toml`); clone upstream as-is; a `cbld.toml` in the clone always wins
 - Recipes shipped for `gh:nlohmann/json`, `gh:DaveGamble/cJSON`, `gh:fmtlib/fmt` — listed by `cbld doctor` and on the Packages docs page. CI builds previous pins (`3.11.3` / `1.7.18` / `11.2.0`) and current tags (`3.12.0` / `1.7.19` / `12.2.0`)
 - Link dependency archives into the consumer executable (compiled libs actually resolve at link time)
+- `cbld fmt` / `cbld fmt --check` — clang-format over sources and public headers (`.clang-format` if present, else LLVM style)
+- `cbld lint` / `cbld lint --deny-warnings` — clang-tidy (clippy analog); `--deny-warnings` is `-D warnings`. `cbld check` remains Clang `--analyze`
+- `cbld check` / `fmt` / `lint` at a workspace root walk every `[workspace] members` entry
+- CI: `cargo fmt --check` and `clippy -D warnings`
+- Changelog published on the documentation site
 - `cbld sync` still requires `CBLD_LIBS_URL`; the three builtin recipes work without it. Index file may be TOML or the legacy `shorthand <url>` lines
 - Install fallback tags aligned to `v0.4.0`
 

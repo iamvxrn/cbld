@@ -34,6 +34,8 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
     let mut checks = vec![
         check_compiler("clang", "C"),
         check_compiler("clang++", "C++"),
+        check_llvm_tool("clang-format", "cbld fmt"),
+        check_llvm_tool("clang-tidy", "cbld lint"),
         check_archiver(),
         check_git(),
         check_fetch_tool(),
@@ -183,6 +185,32 @@ fn check_compiler(driver: &'static str, label: &str) -> Check {
             name: driver,
             ok: false,
             detail: format!("not found on PATH ({label} compiler required)"),
+            fix: Some(install_hint_clang()),
+        },
+    }
+}
+
+/// Probe an LLVM sidecar used by `cbld fmt` / `cbld lint`. Missing is a
+/// failed check with an install hint — `cbld build` still works without them.
+fn check_llvm_tool(name: &'static str, command: &str) -> Check {
+    match Command::new(name).arg("--version").output() {
+        Ok(out) if out.status.success() => {
+            let first_line = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            Check {
+                name,
+                ok: true,
+                detail: first_line,
+                fix: None,
+            }
+        }
+        _ => Check {
+            name,
+            ok: false,
+            detail: format!("not found on PATH (needed for `{command}`)"),
             fix: Some(install_hint_clang()),
         },
     }

@@ -8,7 +8,7 @@ A build engine for C and C++ — strict project layout, Clang under the hood, re
   <button onclick="navigator.clipboard.writeText('curl -fsSL https://cbld.pages.dev/install.sh | sh')">Copy</button>
 </div>
 
-[Quickstart](/quickstart) · [Packages](/packages) · [Other install options](/install) · [GitHub](https://github.com/iamvxrn/cbld)
+[Quickstart](/quickstart) · [Packages](/packages) · [Changelog](/changelog) · [Other install options](/install) · [GitHub](https://github.com/iamvxrn/cbld)
 
 <div class="cbld-grid">
   <section>

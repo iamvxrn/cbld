@@ -29,6 +29,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: rustfmt & clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -54,20 +76,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm
+          sudo apt-get install -y clang llvm clang-format clang-tidy
           clang --version
           ar --version
 
       # macOS runners ship Xcode clang + BSD ar; llvm-ar is optional.
-
-      # --- Toolchain: clang / llvm-ar / lib.exe (Windows) -----------------
-      - name: Install clang + LLVM (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm
-          clang --version
-          ar --version
 
       # --- Toolchain: clang / llvm-ar / lib.exe (Windows) -----------------
       - name: Install clang + LLVM (Windows)

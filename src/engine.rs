@@ -225,6 +225,32 @@ impl Layout {
         Ok(sources)
     }
 
+    /// Sources plus public headers (`include/` and any headers under
+    /// `source_dir`). Used by `cbld fmt` and `cbld lint`, which visit the
+    /// files a human edits, not only the translation units clang compiles.
+    pub fn collect_format_files(&self) -> Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        if self.src.is_dir() {
+            if self.crate_kind != Crate::Header {
+                files.extend(self.collect_sources()?);
+            }
+            files.extend(scan_headers(&self.src, &self.include, &self.exclude)?);
+        }
+        let include_dir = self.root.join("include");
+        if include_dir.is_dir() {
+            files.extend(scan_headers(&include_dir, &[], &[])?);
+        }
+        files.sort();
+        files.dedup();
+        if files.is_empty() {
+            return Err(CbldError::LayoutViolation(format!(
+                "no C/C++ sources or headers to format under {}",
+                self.root.display()
+            )));
+        }
+        Ok(files)
+    }
+
     /// A copy of this layout forced to build as a library. Dependencies are
     /// always archived and linked into the consumer regardless of whether they
     /// expose a `main.*` entry of their own. Header-only packages stay
@@ -313,7 +339,15 @@ fn infer_language(src: &Path, include: &[String], exclude: &[String]) -> Result<
 /// paths.
 fn scan_sources(src: &Path, include: &[String], exclude: &[String]) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    scan_rec(src, src, include, exclude, &mut out)?;
+    scan_rec(src, src, include, exclude, false, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// Headers under `dir`, honoring the same include/exclude globs as sources.
+fn scan_headers(dir: &Path, include: &[String], exclude: &[String]) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    scan_rec(dir, dir, include, exclude, true, &mut out)?;
     out.sort();
     Ok(out)
 }
@@ -323,6 +357,7 @@ fn scan_rec(
     dir: &Path,
     include: &[String],
     exclude: &[String],
+    headers: bool,
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
     for entry in fs::read_dir(dir).path_ctx(dir)? {
@@ -334,11 +369,16 @@ fn scan_rec(
             continue; // prunes directories as well as files
         }
         if path.is_dir() {
-            scan_rec(base, &path, include, exclude, out)?;
-        } else if Language::from_extension(&path).is_some()
-            && (include.is_empty() || crate::glob::matches_any(include, &rel_glob))
-        {
-            out.push(path);
+            scan_rec(base, &path, include, exclude, headers, out)?;
+        } else {
+            let wanted = if headers {
+                Language::is_header(&path)
+            } else {
+                Language::from_extension(&path).is_some()
+            };
+            if wanted && (include.is_empty() || crate::glob::matches_any(include, &rel_glob)) {
+                out.push(path);
+            }
         }
     }
     Ok(())
@@ -361,6 +401,16 @@ pub struct BuiltArtifact {
     /// package — populated regardless of `cache_hit`, since the compile
     /// flags are fully determined without actually invoking the compiler.
     pub compile_commands: Vec<CompileCommandEntry>,
+}
+
+/// Where [`Engine::build_package`] writes the artifact. Bundled so the
+/// method stays under clippy's argument-count lint without losing the
+/// distinct dest knobs (`target/debug` vs `release`, `-o`, archives).
+#[derive(Clone, Copy)]
+pub struct BuildDest<'a> {
+    pub target_dir: &'a Path,
+    pub output_name: Option<&'a str>,
+    pub release: bool,
 }
 
 /// Top-level build orchestrator.
@@ -401,9 +451,7 @@ impl Engine {
         layout: &Layout,
         package: &Package,
         compiler: &Compiler,
-        target_dir: &Path,
-        output_name: Option<&str>,
-        release: bool,
+        dest: BuildDest<'_>,
         dep_archives: &[PathBuf],
     ) -> Result<BuiltArtifact> {
         compiler.validate()?;
@@ -422,7 +470,9 @@ impl Engine {
             });
         }
 
-        let profile_dir = target_dir.join(if release { "release" } else { "debug" });
+        let profile_dir = dest
+            .target_dir
+            .join(if dest.release { "release" } else { "debug" });
         let obj_dir = profile_dir.join("obj").join(&package.name);
         fs::create_dir_all(&obj_dir).path_ctx(&obj_dir)?;
 
@@ -436,14 +486,19 @@ impl Engine {
             )));
         }
 
-        let artifact = artifact_path(&profile_dir, layout.crate_kind, &package.name, output_name);
+        let artifact = artifact_path(
+            &profile_dir,
+            layout.crate_kind,
+            &package.name,
+            dest.output_name,
+        );
 
         // Plan every translation unit up front. This is pure argument-vector
         // construction — no filesystem or process work — so a
         // `compile_commands.json` entry exists for every source file
         // regardless of whether the package below turns out to be served
         // from the global cache.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| target_dir.to_path_buf());
+        let cwd = std::env::current_dir().unwrap_or_else(|_| dest.target_dir.to_path_buf());
         let mut units = Vec::with_capacity(sources.len());
         let mut has_cpp = false;
         for src in &sources {
@@ -563,7 +618,7 @@ impl Engine {
                 "\x1b[1;32m    Finished\x1b[0m {} {} [{}]",
                 kind,
                 artifact.display(),
-                if release {
+                if dest.release {
                     "optimized"
                 } else {
                     "unoptimized + debuginfo"
@@ -1327,6 +1382,9 @@ mod tests {
         assert_eq!(layout.crate_kind, Crate::Header);
         assert_eq!(layout.as_library().crate_kind, Crate::Header);
         assert!(Crate::parse("header-only").unwrap() == Crate::Header);
+        let formatted = layout.collect_format_files().unwrap();
+        assert_eq!(formatted.len(), 1);
+        assert!(formatted[0].ends_with("json.hpp"));
 
         fs::remove_dir_all(&tmp).ok();
     }
@@ -1403,9 +1461,14 @@ mod tests {
         );
         let engine = Engine::new(1, false, true, false, false);
         let target_dir = project.join("target");
+        let dest = BuildDest {
+            target_dir: &target_dir,
+            output_name: None,
+            release: false,
+        };
 
         let first = engine
-            .build_package(&layout, &package, &compiler, &target_dir, None, false, &[])
+            .build_package(&layout, &package, &compiler, dest, &[])
             .unwrap();
         assert!(
             !first.cache_hit,
@@ -1417,7 +1480,17 @@ mod tests {
         fs::remove_dir_all(&target_dir).unwrap();
 
         let second = engine
-            .build_package(&layout, &package, &compiler, &target_dir, None, false, &[])
+            .build_package(
+                &layout,
+                &package,
+                &compiler,
+                BuildDest {
+                    target_dir: &target_dir,
+                    output_name: None,
+                    release: false,
+                },
+                &[],
+            )
             .unwrap();
         assert!(
             second.cache_hit,
@@ -1470,14 +1543,17 @@ mod tests {
             false,
         );
         let engine = Engine::new(1, false, true, false, false);
+        let lib_target = lib_root.join("target");
         let lib_built = engine
             .build_package(
                 &lib_layout,
                 &lib_pkg,
                 &lib_compiler,
-                &lib_root.join("target"),
-                None,
-                false,
+                BuildDest {
+                    target_dir: &lib_target,
+                    output_name: None,
+                    release: false,
+                },
                 &[],
             )
             .unwrap();
@@ -1516,14 +1592,17 @@ mod tests {
             Vec::new(),
             false,
         );
+        let exe_target = exe_root.join("target");
         let exe_built = engine
             .build_package(
                 &exe_layout,
                 &exe_pkg,
                 &exe_compiler,
-                &exe_root.join("target"),
-                None,
-                false,
+                BuildDest {
+                    target_dir: &exe_target,
+                    output_name: None,
+                    release: false,
+                },
                 std::slice::from_ref(&lib_built.path),
             )
             .unwrap();

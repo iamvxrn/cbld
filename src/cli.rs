@@ -83,6 +83,12 @@ pub enum Command {
     /// compiling to an object file or invoking the linker.
     Check(CheckArgs),
 
+    /// Format C/C++ sources and public headers with clang-format (`cargo fmt`).
+    Fmt(FmtArgs),
+
+    /// Lint C/C++ sources and public headers with clang-tidy (`cargo clippy`).
+    Lint(LintArgs),
+
     /// Generate shell completion scripts for the specified shell.
     Completions(CompletionsArgs),
 }
@@ -175,6 +181,47 @@ pub struct CheckArgs {
     /// Analyze as if cross-compiling for this target triple, passed to
     /// clang as `--target=<triple>`. Overrides the `[package] target`
     /// manifest field when both are set.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+}
+
+/// Arguments for `cbld fmt`.
+#[derive(clap::Args, Debug)]
+pub struct FmtArgs {
+    /// Don't write files; fail if clang-format would rewrite any of them
+    /// (`cargo fmt --check`).
+    #[arg(long)]
+    pub check: bool,
+
+    /// Path to the project root (defaults to the current directory).
+    #[arg(long, value_name = "DIR")]
+    pub manifest_path: Option<PathBuf>,
+}
+
+/// Arguments for `cbld lint`.
+///
+/// Same analysis-shaped flags as `cbld check` (features, target, include
+/// paths from dependencies) plus `--deny-warnings` for clippy's `-D warnings`.
+#[derive(clap::Args, Debug)]
+pub struct LintArgs {
+    /// Treat every clang-tidy finding as an error (`clippy -D warnings`).
+    #[arg(long)]
+    pub deny_warnings: bool,
+
+    /// Path to the project root (defaults to the current directory).
+    #[arg(long, value_name = "DIR")]
+    pub manifest_path: Option<PathBuf>,
+
+    /// Comma-separated list of features to activate.
+    #[arg(long, value_name = "FEATURES", value_delimiter = ',')]
+    pub features: Vec<String>,
+
+    /// Do not activate the `default` feature set.
+    #[arg(long)]
+    pub no_default_features: bool,
+
+    /// Parse as if cross-compiling for this target triple. Overrides the
+    /// `[package] target` manifest field when both are set.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
 }
@@ -407,6 +454,39 @@ mod tests {
                 assert_eq!(args.features, vec!["a".to_string(), "b".to_string()]);
             }
             other => panic!("expected Command::Check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fmt_parses_check_flag() {
+        let cli = Cli::try_parse_from(["cbld", "fmt"]).unwrap();
+        match cli.command {
+            Command::Fmt(args) => {
+                assert!(!args.check);
+                assert!(args.manifest_path.is_none());
+            }
+            other => panic!("expected Command::Fmt, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["cbld", "fmt", "--check"]).unwrap();
+        match cli.command {
+            Command::Fmt(args) => assert!(args.check),
+            other => panic!("expected Command::Fmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lint_parses_deny_warnings_flag() {
+        let cli = Cli::try_parse_from(["cbld", "lint"]).unwrap();
+        match cli.command {
+            Command::Lint(args) => assert!(!args.deny_warnings),
+            other => panic!("expected Command::Lint, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["cbld", "lint", "--deny-warnings"]).unwrap();
+        match cli.command {
+            Command::Lint(args) => assert!(args.deny_warnings),
+            other => panic!("expected Command::Lint, got {other:?}"),
         }
     }
 

@@ -1,6 +1,8 @@
 # Architecture
 
-cbld is a single Rust binary. It shells out to tools the OS already has (`clang`, `git`, `ar` / `llvm-ar` / `lib.exe`, `curl` or PowerShell) instead of embedding HTTP, VCS, or compiler libraries.
+cbld is a single Rust binary. It shells out to tools the OS already has (`clang`, `clang-format`, `clang-tidy`, `git`, `ar` / `llvm-ar` / `lib.exe`, `curl` or PowerShell) instead of embedding HTTP, VCS, or compiler libraries.
+
+`cbld fmt` runs `clang-format` (`--check` is `--dry-run --Werror`). `cbld lint` runs `clang-tidy` (`--deny-warnings` is `-warnings-as-errors=*`). `cbld check` is Clang `--analyze`, not tidy.
 
 ## Layout
 

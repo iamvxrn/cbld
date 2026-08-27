@@ -63,6 +63,13 @@ pub enum CbldError {
     /// check` never compiles or links anything.
     Analysis { failures: usize },
 
+    /// `cbld fmt --check` would rewrite at least one file.
+    FmtCheck,
+
+    /// `cbld lint` failed: clang-tidy reported findings (with
+    /// `--deny-warnings`) or could not parse a file.
+    Lint,
+
     /// A configuration value was invalid (e.g. unknown optimization level).
     Config(String),
 
@@ -138,6 +145,15 @@ impl fmt::Display for CbldError {
                     "check failed: {} file(s) could not be analyzed",
                     failures
                 )
+            }
+            CbldError::FmtCheck => {
+                write!(
+                    f,
+                    "fmt --check failed: clang-format would rewrite one or more files"
+                )
+            }
+            CbldError::Lint => {
+                write!(f, "lint failed: clang-tidy reported findings")
             }
             CbldError::Config(m) => write!(f, "invalid configuration: {}", m),
             CbldError::Environment(m) => write!(f, "environment error: {}", m),

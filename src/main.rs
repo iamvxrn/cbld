@@ -10,9 +10,11 @@ mod compiler;
 mod doctor;
 mod engine;
 mod error;
+mod fmt;
 mod glob;
 mod hash;
 mod json;
+mod lint;
 mod manifest;
 mod migrate;
 mod recipe;
@@ -23,9 +25,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use cli::{BuildArgs, CheckArgs, Cli, Command as Cmd, InitArgs, RunArgs, UpdateArgs, VendorArgs};
+use cli::{
+    BuildArgs, CheckArgs, Cli, Command as Cmd, FmtArgs, InitArgs, LintArgs, RunArgs, UpdateArgs,
+    VendorArgs,
+};
 use compiler::Compiler;
-use engine::{default_jobs, require_package, Crate, Engine, Layout, ScanConfig};
+use engine::{default_jobs, require_package, BuildDest, Crate, Engine, Layout, ScanConfig};
 use error::{CbldError, IoPathExt, Result};
 use json::Json;
 use manifest::{Dependency, Lockfile, Manifest, Package, ToolchainSpec};
@@ -48,6 +53,8 @@ fn main() {
         Cmd::Migrate(args) => migrate::run(&args, quiet),
         Cmd::Vendor(args) => cmd_vendor(args, verbose, quiet),
         Cmd::Check(args) => cmd_check(args, verbose, quiet),
+        Cmd::Fmt(args) => cmd_fmt(args, verbose, quiet),
+        Cmd::Lint(args) => cmd_lint(args, verbose, quiet),
         Cmd::Completions(args) => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
@@ -79,6 +86,16 @@ struct BuildOutcome {
     /// One `compile_commands.json` entry per translation unit compiled in
     /// this invocation (root package plus every dependency), written to the
     /// project root by `cmd_build` after a successful build.
+    compile_commands: Vec<compdb::CompileCommandEntry>,
+}
+
+/// Include dirs, archives, cache hits, and compile-commands entries from
+/// building the resolved dependency graph. A named struct so clippy doesn't
+/// trip on the four-tuple return of `build_dependencies`.
+struct DepArtifacts {
+    includes: Vec<PathBuf>,
+    archives: Vec<PathBuf>,
+    cache_hits: usize,
     compile_commands: Vec<compdb::CompileCommandEntry>,
 }
 
@@ -281,8 +298,7 @@ fn build_single(
 
     // Build dependencies first so their archives/headers exist.
     let target_dir = root.join("target");
-    let (dep_includes, dep_archives, dep_cache_hits, dep_compile_commands) =
-        build_dependencies(&resolved, args, verbose, quiet, json, target.as_deref())?;
+    let deps = build_dependencies(&resolved, args, verbose, quiet, json, target.as_deref())?;
 
     // --- Compile the root package ----------------------------------------
     let features = manifest.resolve_features(&args.features, args.no_default_features);
@@ -296,7 +312,7 @@ fn build_single(
     // Package-level `include_dirs` (legacy support) search first, then
     // dependency headers.
     let mut include_dirs = package_include_dirs(root, &package);
-    include_dirs.extend(dep_includes);
+    include_dirs.extend(deps.includes);
 
     let compiler = Compiler::new(
         manifest.profile.c.clone().unwrap_or_default(),
@@ -316,19 +332,21 @@ fn build_single(
         &layout,
         &package,
         &compiler,
-        &target_dir,
-        args.output.as_deref(),
-        args.release,
-        &dep_archives,
+        BuildDest {
+            target_dir: &target_dir,
+            output_name: args.output.as_deref(),
+            release: args.release,
+        },
+        &deps.archives,
     )?;
 
-    let mut compile_commands = dep_compile_commands;
+    let mut compile_commands = deps.compile_commands;
     compile_commands.extend(built.compile_commands);
 
     Ok(BuildOutcome {
         artifact: built.path,
         crate_kind: layout.crate_kind,
-        cache_hits: dep_cache_hits + if built.cache_hit { 1 } else { 0 },
+        cache_hits: deps.cache_hits + if built.cache_hit { 1 } else { 0 },
         compile_commands,
     })
 }
@@ -469,12 +487,7 @@ fn build_dependencies(
     quiet: bool,
     json: bool,
     cross_target: Option<&str>,
-) -> Result<(
-    Vec<PathBuf>,
-    Vec<PathBuf>,
-    usize,
-    Vec<compdb::CompileCommandEntry>,
-)> {
+) -> Result<DepArtifacts> {
     let mut includes = Vec::new();
     let mut archives = Vec::new();
     let mut cache_hits = 0usize;
@@ -543,9 +556,11 @@ fn build_dependencies(
             &lib_layout,
             &dep_package,
             &dep_compiler,
-            &dep_target,
-            None,
-            args.release,
+            BuildDest {
+                target_dir: &dep_target,
+                output_name: None,
+                release: args.release,
+            },
             &[],
         )?;
         if built.cache_hit {
@@ -560,7 +575,12 @@ fn build_dependencies(
     // (dependencies first), so reverse before handing the list to the linker.
     archives.reverse();
 
-    Ok((includes, archives, cache_hits, compile_commands))
+    Ok(DepArtifacts {
+        includes,
+        archives,
+        cache_hits,
+        compile_commands,
+    })
 }
 
 /// `cbld run`
@@ -603,21 +623,101 @@ fn cmd_run(args: RunArgs, verbose: bool, quiet: bool) -> Result<()> {
 fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool) -> Result<()> {
     let root = project_root(args.manifest_path.as_deref())?;
     let manifest = Manifest::load(&root)?;
-    let package = require_package(&manifest, &root)?;
-    // `cbld check` has no `--from`; it honors the manifest's `source_dir`.
-    let scan = scan_config(None, &package)?;
-    let layout = Layout::assert_cbld_standard(&root, &scan)?;
+    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+        let (layout, compiler) = analysis_compiler(
+            pkg_root,
+            pkg_manifest,
+            &args.features,
+            args.no_default_features,
+            args.target.as_deref(),
+            verbose,
+        )?;
+        let engine = Engine::new(resolve_jobs(args.jobs), verbose, quiet, false, false);
+        engine.check_package(&layout, &compiler)
+    })
+}
 
-    let resolved = match vendored_dependencies(&root, &manifest)? {
+/// `cbld fmt` — clang-format the package (or every workspace member).
+fn cmd_fmt(args: FmtArgs, verbose: bool, quiet: bool) -> Result<()> {
+    let root = project_root(args.manifest_path.as_deref())?;
+    let manifest = Manifest::load(&root)?;
+    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+        let package = require_package(pkg_manifest, pkg_root)?;
+        let scan = scan_config(None, &package)?;
+        let layout = Layout::assert_cbld_standard(pkg_root, &scan)?;
+        fmt::run(&layout, args.check, verbose, quiet)
+    })
+}
+
+/// `cbld lint` — clang-tidy the package (or every workspace member).
+fn cmd_lint(args: LintArgs, verbose: bool, quiet: bool) -> Result<()> {
+    let root = project_root(args.manifest_path.as_deref())?;
+    let manifest = Manifest::load(&root)?;
+    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+        let (layout, compiler) = analysis_compiler(
+            pkg_root,
+            pkg_manifest,
+            &args.features,
+            args.no_default_features,
+            args.target.as_deref(),
+            verbose,
+        )?;
+        lint::run(&layout, &compiler, args.deny_warnings, verbose, quiet)
+    })
+}
+
+/// Run `f` on a standalone package, or on each `[workspace] members` entry.
+fn for_each_package(
+    root: &Path,
+    manifest: &Manifest,
+    mut f: impl FnMut(&Path, &Manifest) -> Result<()>,
+) -> Result<()> {
+    if manifest.is_workspace() {
+        let members = manifest
+            .workspace
+            .as_ref()
+            .map(|w| w.members.clone())
+            .unwrap_or_default();
+        if members.is_empty() {
+            return Err(CbldError::LayoutViolation(
+                "workspace has no members".into(),
+            ));
+        }
+        for member in members {
+            let member_root = root.join(&member);
+            let member_manifest = Manifest::load(&member_root)?;
+            f(&member_root, &member_manifest)?;
+        }
+        Ok(())
+    } else {
+        f(root, manifest)
+    }
+}
+
+/// Layout + compiler for commands that parse the package the same way
+/// `cbld check` does: resolve deps only for include paths, never compile them.
+fn analysis_compiler(
+    root: &Path,
+    manifest: &Manifest,
+    features: &[String],
+    no_default_features: bool,
+    target: Option<&str>,
+    verbose: bool,
+) -> Result<(Layout, Compiler)> {
+    let package = require_package(manifest, root)?;
+    let scan = scan_config(None, &package)?;
+    let layout = Layout::assert_cbld_standard(root, &scan)?;
+
+    let resolved = match vendored_dependencies(root, manifest)? {
         Some(vendored) => vendored,
         None => {
             let resolver = Resolver::new(verbose)?;
-            let existing_lock = Lockfile::load(&root)?;
-            resolver.resolve_all(&manifest, existing_lock.as_ref())?
+            let existing_lock = Lockfile::load(root)?;
+            resolver.resolve_all(manifest, existing_lock.as_ref())?
         }
     };
     let index = PackageIndex::load()?;
-    let mut include_dirs = package_include_dirs(&root, &package);
+    let mut include_dirs = package_include_dirs(root, &package);
     for dep in &resolved {
         let dep_manifest = index.effective_manifest(
             &dep.cache_path,
@@ -631,24 +731,21 @@ fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool) -> Result<()> {
         }
     }
 
-    let features = manifest.resolve_features(&args.features, args.no_default_features);
-    let target = effective_target(args.target.as_deref(), &manifest);
-
+    let features = manifest.resolve_features(features, no_default_features);
+    let target = effective_target(target, manifest);
     let compiler = Compiler::new(
         manifest.profile.c.clone().unwrap_or_default(),
         manifest.profile.cpp.clone().unwrap_or_default(),
-        &root,
+        root,
         include_dirs,
         &features,
-        false, // release: irrelevant — analysis never reaches codegen.
-        false, // trace: irrelevant — no compilation happens to profile.
+        false,
+        false,
         target,
         package.defines.clone(),
         package.ignore_warnings,
     );
-
-    let engine = Engine::new(resolve_jobs(args.jobs), verbose, quiet, false, false);
-    engine.check_package(&layout, &compiler)
+    Ok((layout, compiler))
 }
 
 /// `cbld update` — re-resolve from scratch and rewrite the lockfile.
