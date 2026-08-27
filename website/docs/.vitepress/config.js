@@ -4,6 +4,9 @@ export default defineConfig({
   title: "cbld",
   description: "A modern build engine for C/C++.",
   appearance: 'dark',
+  // Static files in docs/public/ (`cbld-libs`, `cbld-libs.toml`) are served at
+  // the site root, but VitePress's markdown linker only knows about pages.
+  ignoreDeadLinks: ['/cbld-libs', '/cbld-libs.toml'],
   head: [['link', { rel: 'icon', href: '/favicon.svg' }]],
   themeConfig: {
     logo: '/logo.svg',
