@@ -7,7 +7,12 @@ export default defineConfig({
   // Static files in docs/public/ (`cbld-libs`, `cbld-libs.toml`) are served at
   // the site root, but VitePress's markdown linker only knows about pages.
   ignoreDeadLinks: ['/cbld-libs', '/cbld-libs.toml'],
-  head: [['link', { rel: 'icon', href: '/favicon.svg' }]],
+  head: [
+    ['link', { rel: 'icon', href: '/favicon.svg' }],
+    ['meta', { property: 'og:image', content: 'https://cbld.pages.dev/social.png' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: 'https://cbld.pages.dev/social.png' }],
+  ],
   themeConfig: {
     logo: '/logo.svg',
     nav: [

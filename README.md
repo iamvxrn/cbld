@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="website/docs/public/social.png" alt="cbld — Clang-first C/C++ builds" width="720">
+</p>
+
 # Cbld
 
 A build system for C and C++ projects with a fixed `src/` layout and Clang integration.

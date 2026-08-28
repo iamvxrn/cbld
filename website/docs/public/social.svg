@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="cbld">
+  <defs>
+    <linearGradient id="mark" x1="16" y1="12" x2="84" y2="88" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7fb2ec"/>
+      <stop offset="1" stop-color="#3a628f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="42%" r="52%">
+      <stop offset="0" stop-color="#3a628f" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#0e1116" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="#0e1116"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect width="1280" height="6" fill="#4a7bc0"/>
+  <g transform="translate(168, 188) scale(2.55)" stroke="url(#mark)" stroke-width="11" stroke-linecap="round" fill="none">
+    <path d="M72.6 27.4 A32 32 0 0 0 29.9 25.1"/>
+    <path d="M26.2 28.6 A32 32 0 0 0 26.2 71.4"/>
+    <path d="M29.9 74.9 A32 32 0 0 0 72.6 72.6"/>
+    <rect x="39" y="39" width="22" height="22" rx="6" fill="url(#mark)" stroke="none"/>
+  </g>
+  <text x="468" y="318" font-family="Noto Sans, sans-serif" font-size="92" font-weight="700" fill="#e9eef5">cbld</text>
+  <text x="468" y="384" font-family="Noto Sans, sans-serif" font-size="32" font-weight="400" fill="#a6b1c2">Clang-first C/C++ builds</text>
+</svg>
