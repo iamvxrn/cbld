@@ -617,6 +617,7 @@ impl Engine {
             &artifact,
             has_cpp,
             layout.crate_kind == Crate::Library,
+            &package.libs,
         );
         self.run_link(&link, layout.crate_kind)?;
 
@@ -1303,6 +1304,7 @@ mod tests {
             source_dir: "src".to_string(),
             include_dirs: Vec::new(),
             defines: Vec::new(),
+            libs: Vec::new(),
             ignore_warnings: false,
             kind: None,
             include: Vec::new(),
@@ -1594,6 +1596,7 @@ mod tests {
             source_dir: "src".to_string(),
             include_dirs: Vec::new(),
             defines: Vec::new(),
+            libs: Vec::new(),
             ignore_warnings: false,
             kind: None,
             include: Vec::new(),

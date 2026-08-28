@@ -673,6 +673,11 @@ impl Compiler {
     /// with the C++ driver (needed to pull in the C++ runtime/stdlib) — a
     /// concrete consequence of strict separation.
     ///
+    /// `libs` are `[package] libs` names, each emitted as `-l<name>` after the
+    /// output path so GNU ld's single-pass scan still sees object files first.
+    /// They are ignored when `is_library` is true (the archiver does not take
+    /// `-l` flags).
+    ///
     /// Executables always resolve to exactly one command. Libraries resolve to
     /// one or more *candidates*, most-preferred first: the caller (`Engine`)
     /// is expected to try each in turn and only fall through to the next one
@@ -684,6 +689,7 @@ impl Compiler {
         output: &Path,
         has_cpp: bool,
         is_library: bool,
+        libs: &[String],
     ) -> Vec<LinkCommand> {
         if is_library {
             return archiver_candidates(objects, output);
@@ -729,6 +735,13 @@ impl Compiler {
         }
         args.push("-o".to_string());
         args.push(output.to_string_lossy().to_string());
+        for lib in libs {
+            let name = lib.strip_prefix("-l").unwrap_or(lib);
+            if name.is_empty() {
+                continue;
+            }
+            args.push(format!("-l{name}"));
+        }
         vec![LinkCommand {
             program: driver.to_string(),
             args,
@@ -854,11 +867,11 @@ mod tests {
         let objects = vec![PathBuf::from("main.o")];
         let output = PathBuf::from("app");
 
-        let c_cmds = c.link_command(&objects, &output, false, false);
+        let c_cmds = c.link_command(&objects, &output, false, false, &[]);
         assert_eq!(c_cmds.len(), 1);
         assert_eq!(c_cmds[0].program, Language::C.driver());
 
-        let cpp_cmds = c.link_command(&objects, &output, true, false);
+        let cpp_cmds = c.link_command(&objects, &output, true, false, &[]);
         assert_eq!(cpp_cmds.len(), 1);
         assert_eq!(cpp_cmds[0].program, Language::Cpp.driver());
     }
@@ -873,7 +886,7 @@ mod tests {
         let objects = vec![PathBuf::from("a.obj"), PathBuf::from("b.obj")];
         let output = PathBuf::from("mylib.lib");
 
-        let cmds = c.link_command(&objects, &output, false, true);
+        let cmds = c.link_command(&objects, &output, false, true, &[]);
         assert_eq!(cmds.len(), 2);
 
         assert_eq!(cmds[0].program, "llvm-ar");
@@ -895,7 +908,7 @@ mod tests {
         let objects = vec![PathBuf::from("a.o"), PathBuf::from("b.o")];
         let output = PathBuf::from("libmy.a");
 
-        let cmds = c.link_command(&objects, &output, false, true);
+        let cmds = c.link_command(&objects, &output, false, true, &[]);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].program, "ar");
         assert_eq!(cmds[0].args[0], "rcsD");
@@ -911,7 +924,7 @@ mod tests {
         let objects = vec![PathBuf::from("a.o"), PathBuf::from("b.o")];
         let output = PathBuf::from("libmy.a");
 
-        let cmds = c.link_command(&objects, &output, false, true);
+        let cmds = c.link_command(&objects, &output, false, true, &[]);
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].program, "llvm-ar");
         assert_eq!(cmds[0].args[0], "rcsD");
@@ -1211,7 +1224,7 @@ mod tests {
         let objects = vec![PathBuf::from("main.o")];
         let output = PathBuf::from("app");
 
-        let cmds = c.link_command(&objects, &output, false, false);
+        let cmds = c.link_command(&objects, &output, false, false, &[]);
         assert_eq!(cmds.len(), 1);
         let sanitize_pos = cmds[0]
             .args
@@ -1306,7 +1319,7 @@ mod tests {
         let cross = compiler_with_target("wasm32-unknown-unknown");
         let objects = vec![PathBuf::from("main.o")];
 
-        let exe_cmds = cross.link_command(&objects, &PathBuf::from("app"), false, false);
+        let exe_cmds = cross.link_command(&objects, &PathBuf::from("app"), false, false, &[]);
         assert_eq!(exe_cmds.len(), 1);
         let target_pos = exe_cmds[0]
             .args
@@ -1325,7 +1338,7 @@ mod tests {
         } else {
             PathBuf::from("libmy.a")
         };
-        let lib_cmds = cross.link_command(&objects, &lib_output, false, true);
+        let lib_cmds = cross.link_command(&objects, &lib_output, false, true, &[]);
         for cmd in &lib_cmds {
             assert!(!cmd.args.iter().any(|a| a.starts_with("--target=")));
         }
@@ -1419,9 +1432,34 @@ mod tests {
             PathBuf::from("libmy.a")
         };
 
-        let cmds = c.link_command(&objects, &output, false, true);
+        let cmds = c.link_command(&objects, &output, false, true, &[]);
         for cmd in &cmds {
             assert!(!cmd.args.iter().any(|a| a.starts_with("-fsanitize=")));
+        }
+    }
+
+    #[test]
+    fn link_command_executable_appends_system_libs() {
+        let c = compiler();
+        let objects = vec![PathBuf::from("main.o")];
+        let output = PathBuf::from("app");
+        let libs = ["pthread".to_string(), "-lm".to_string()];
+        let cmds = c.link_command(&objects, &output, false, false, &libs);
+        assert_eq!(cmds.len(), 1);
+        let args = &cmds[0].args;
+        let o_pos = args.iter().position(|a| a == "-o").expect("-o");
+        assert!(args[o_pos + 1] == "app");
+        assert_eq!(args[args.len() - 2], "-lpthread");
+        assert_eq!(args[args.len() - 1], "-lm");
+
+        let lib_output = if cfg!(target_os = "windows") {
+            PathBuf::from("mylib.lib")
+        } else {
+            PathBuf::from("libmy.a")
+        };
+        let lib_cmds = c.link_command(&objects, &lib_output, false, true, &libs);
+        for cmd in &lib_cmds {
+            assert!(!cmd.args.iter().any(|a| a.starts_with("-l")));
         }
     }
 }

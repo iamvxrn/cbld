@@ -67,6 +67,7 @@ impl Recipe {
                 source_dir: self.source_dir.clone().unwrap_or_else(|| "src".to_string()),
                 include_dirs: self.include_dirs.clone(),
                 defines: self.defines.clone(),
+                libs: Vec::new(),
                 ignore_warnings: self.ignore_warnings,
                 kind: self.kind.clone(),
                 include: self.include.clone(),

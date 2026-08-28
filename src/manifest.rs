@@ -91,6 +91,10 @@ pub struct Package {
     /// the per-language `[profile.c]`/`[profile.cpp]` `defines`.
     #[serde(default)]
     pub defines: Vec<String>,
+    /// System libraries passed to the linker as `-l<name>` when linking an
+    /// executable (e.g. `pthread`, `m`). Ignored for static libraries.
+    #[serde(default)]
+    pub libs: Vec<String>,
     /// Suppress all compiler warnings by injecting `-w`. A blunt escape hatch
     /// for building noisy legacy code you don't own. `cbld build
     /// --ignore-warnings` turns this on from the CLI regardless of the
@@ -497,6 +501,7 @@ mod tests {
         assert_eq!(pkg.source_dir, "src");
         assert!(pkg.include_dirs.is_empty());
         assert!(pkg.defines.is_empty());
+        assert!(pkg.libs.is_empty());
         assert!(!pkg.ignore_warnings);
     }
 
@@ -509,6 +514,7 @@ mod tests {
              source_dir = \"legacy/src\"\n\
              include_dirs = [\"legacy/include\", \"vendor/include\"]\n\
              defines = [\"LEGACY\", \"VERSION=2\"]\n\
+             libs = [\"pthread\", \"m\"]\n\
              ignore_warnings = true\n",
         )
         .unwrap();
@@ -516,6 +522,7 @@ mod tests {
         assert_eq!(pkg.source_dir, "legacy/src");
         assert_eq!(pkg.include_dirs, vec!["legacy/include", "vendor/include"]);
         assert_eq!(pkg.defines, vec!["LEGACY", "VERSION=2"]);
+        assert_eq!(pkg.libs, vec!["pthread", "m"]);
         assert!(pkg.ignore_warnings);
     }
 
