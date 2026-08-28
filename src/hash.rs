@@ -114,6 +114,25 @@ mod tests {
     }
 
     #[test]
+    fn changing_header_content_changes_the_key() {
+        let dir = std::env::temp_dir().join(format!("cbld-hash-test-h-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = write_temp(
+            &dir,
+            "a.c",
+            "#include \"a.h\"\nint main(void) { return x; }\n",
+        );
+        let hdr = write_temp(&dir, "a.h", "int x;\n");
+        let flags = vec!["-std=c17".to_string()];
+        let files = [src.clone(), hdr.clone()];
+        let before = package_key(&files, &flags).unwrap();
+        write_temp(&dir, "a.h", "int x = 1;\n");
+        let after = package_key(&files, &flags).unwrap();
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn changing_flags_changes_the_key() {
         let dir = std::env::temp_dir().join(format!("cbld-hash-test3-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();

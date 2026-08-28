@@ -9,14 +9,13 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
 use crate::compdb::CompileCommandEntry;
-use crate::compiler::{CompileUnit, Compiler, Language, LinkCommand};
+use crate::compiler::{driver_command, CompileUnit, Compiler, Language, LinkCommand};
 use crate::error::{CbldError, CompileDiagnostic, IoPathExt, Result};
 use crate::hash;
 use crate::manifest::{Manifest, Package};
@@ -515,7 +514,12 @@ impl Engine {
                 directory: cwd.clone(),
                 file: u.source.clone(),
                 arguments: {
-                    let mut args = vec![u.language.driver().to_string()];
+                    let mut args: Vec<String> = u
+                        .language
+                        .driver()
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect();
                     args.extend(u.args.clone());
                     args
                 },
@@ -528,7 +532,15 @@ impl Engine {
         // already been cached globally under ~/.cbld/cache/prebuilt/{hash}.
         let cache_key = if layout.crate_kind == Crate::Library {
             let fingerprint = compiler.cache_fingerprint(layout.entry_language)?;
-            Some(hash::package_key(&sources, &fingerprint)?)
+            let mut cache_files = sources.clone();
+            cache_files.extend(scan_headers(&layout.src, &layout.include, &layout.exclude)?);
+            let include_dir = layout.root.join("include");
+            if include_dir.is_dir() {
+                cache_files.extend(scan_headers(&include_dir, &[], &[])?);
+            }
+            cache_files.sort();
+            cache_files.dedup();
+            Some(hash::package_key(&cache_files, &fingerprint)?)
         } else {
             None
         };
@@ -871,7 +883,7 @@ impl Engine {
                 );
             }
 
-            let output = match Command::new(&link.program).args(&link.args).output() {
+            let output = match driver_command(&link.program).args(&link.args).output() {
                 Ok(out) => out,
                 Err(source) => {
                     let is_last = i + 1 == candidates.len();
@@ -962,7 +974,7 @@ fn collect_failure_diagnostics(result: &UnitResult, out: &mut Vec<CompileDiagnos
 /// Compile a single unit by invoking clang/clang++.
 fn run_compile(unit: &CompileUnit) -> UnitResult {
     let driver = unit.language.driver();
-    let output = Command::new(driver).args(&unit.args).output();
+    let output = driver_command(driver).args(&unit.args).output();
 
     match output {
         Ok(out) => {
@@ -1146,22 +1158,28 @@ fn parse_header_line(line: &str) -> Option<Diagnostic> {
     };
 
     // Expect: file:line:col: severity: message
-    // We split carefully because Windows paths could contain ':'. cbld targets
-    // Linux/BSD first, so a left-to-right scan on the known shape is fine.
-    let mut parts = head.splitn(4, ':');
-    let file = parts.next()?;
-    let line_str = parts.next()?;
-    let col_str = parts.next()?;
-    let rest = parts.next()?; // " severity: message"
+    // Match the severity marker first, then split location from the right so a
+    // Windows drive letter (`C:\src\file.cpp:10:5: error: ...`) is not treated
+    // as the file path.
+    const MARKERS: [(&str, &str); 4] = [
+        (": fatal error: ", "fatal error"),
+        (": error: ", "error"),
+        (": warning: ", "warning"),
+        (": note: ", "note"),
+    ];
+    let (loc, sev_str, message) = MARKERS.iter().find_map(|(marker, sev)| {
+        let idx = head.find(marker)?;
+        Some((
+            head[..idx].trim(),
+            *sev,
+            head[idx + marker.len()..].trim().to_string(),
+        ))
+    })?;
 
+    let (path_and_line, col_str) = loc.rsplit_once(':')?;
+    let (file, line_str) = path_and_line.rsplit_once(':')?;
     let line_no: usize = line_str.trim().parse().ok()?;
     let col_no: usize = col_str.trim().parse().ok()?;
-
-    let rest = rest.trim_start();
-    // rest is "severity: message"; severity may be "fatal error".
-    let sev_split = rest.find(": ")?;
-    let sev_str = rest[..sev_split].trim();
-    let message = rest[sev_split + 2..].trim().to_string();
     let severity = Severity::parse(sev_str)?;
 
     Some(Diagnostic {
@@ -1259,6 +1277,7 @@ mod tests {
     use super::*;
     use crate::compiler::Compiler;
     use crate::manifest::{CProfile, CppProfile};
+    use std::process::Command;
     use std::sync::Mutex;
 
     /// Env vars are process-global; serialize the one test below that
@@ -1684,5 +1703,27 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains("custom"));
+    }
+
+    #[test]
+    fn parse_header_line_unix_and_windows_paths() {
+        let unix = parse_clang_diagnostics(
+            "src/main.c:10:5: error: undeclared identifier [-Werror]\nint x;\n    ^\n",
+        );
+        assert_eq!(unix.len(), 1);
+        assert_eq!(unix[0].file, PathBuf::from("src/main.c"));
+        assert_eq!(unix[0].line, 10);
+        assert_eq!(unix[0].column, 5);
+        assert_eq!(unix[0].message, "undeclared identifier");
+        assert_eq!(unix[0].code.as_deref(), Some("-Werror"));
+
+        let win = parse_clang_diagnostics(
+            r"C:\Users\dev\src\main.cpp:12:3: warning: unused variable [-Wunused-variable]",
+        );
+        assert_eq!(win.len(), 1);
+        assert_eq!(win[0].file, PathBuf::from(r"C:\Users\dev\src\main.cpp"));
+        assert_eq!(win[0].line, 12);
+        assert_eq!(win[0].column, 3);
+        assert_eq!(win[0].severity, Severity::Warning);
     }
 }

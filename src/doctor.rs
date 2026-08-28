@@ -10,6 +10,7 @@
 use std::io::ErrorKind;
 use std::process::Command;
 
+use crate::compiler::driver_command;
 use crate::error::Result;
 use crate::json::Json;
 use crate::manifest::{Manifest, ToolchainSpec};
@@ -167,7 +168,7 @@ fn check_toolchain_pin() -> Option<Check> {
 
 /// Probe a clang driver for presence and version.
 fn check_compiler(driver: &'static str, label: &str) -> Check {
-    match Command::new(driver).arg("--version").output() {
+    match driver_command(driver).arg("--version").output() {
         Ok(out) if out.status.success() => {
             let first_line = String::from_utf8_lossy(&out.stdout)
                 .lines()

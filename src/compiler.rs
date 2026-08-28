@@ -7,6 +7,7 @@
 //! lets C flags leak into a C++ invocation or vice versa.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::error::{CbldError, Result};
 use crate::manifest::{CProfile, CppProfile};
@@ -31,11 +32,7 @@ impl Language {
     /// The compiler driver to invoke for this language (auto-detects clang -> gcc -> cc).
     pub fn driver(self) -> &'static str {
         for &candidate in self.driver_candidates() {
-            if std::process::Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok()
-            {
+            if driver_command(candidate).arg("--version").output().is_ok() {
                 return candidate;
             }
         }
@@ -85,6 +82,17 @@ impl Language {
             Language::Cpp => "C++",
         }
     }
+}
+
+/// Build a `Command` for a driver name that may include arguments (`zig cc`).
+pub fn driver_command(driver: &str) -> Command {
+    let mut parts = driver.split_whitespace();
+    let prog = parts.next().unwrap_or(driver);
+    let mut cmd = Command::new(prog);
+    for arg in parts {
+        cmd.arg(arg);
+    }
+    cmd
 }
 
 /// Optimization level, parsed from the manifest string into a closed set so we
@@ -688,12 +696,16 @@ impl Compiler {
         // what the object files were compiled with.
         let (driver, profile_lto, profile_sanitizers) = if has_cpp {
             (
-                "clang++",
+                Language::Cpp.driver(),
                 self.cpp_profile.lto,
                 &self.cpp_profile.sanitizers,
             )
         } else {
-            ("clang", self.c_profile.lto, &self.c_profile.sanitizers)
+            (
+                Language::C.driver(),
+                self.c_profile.lto,
+                &self.c_profile.sanitizers,
+            )
         };
         // Already validated in `Compiler::validate()` before any compilation
         // started, so parsing here can only fail if that check was skipped.
@@ -822,6 +834,17 @@ mod tests {
         )
     }
 
+    #[test]
+    fn driver_command_splits_multiword_drivers() {
+        let cmd = driver_command("zig cc");
+        assert_eq!(cmd.get_program(), "zig");
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["cc"]);
+    }
+
     /// `link_command` for an executable always resolves to exactly one
     /// candidate, driven by whichever language pulled in the unit (the C++
     /// driver if any translation unit was C++, to pull in the C++ runtime).
@@ -833,11 +856,11 @@ mod tests {
 
         let c_cmds = c.link_command(&objects, &output, false, false);
         assert_eq!(c_cmds.len(), 1);
-        assert_eq!(c_cmds[0].program, "clang");
+        assert_eq!(c_cmds[0].program, Language::C.driver());
 
         let cpp_cmds = c.link_command(&objects, &output, true, false);
         assert_eq!(cpp_cmds.len(), 1);
-        assert_eq!(cpp_cmds[0].program, "clang++");
+        assert_eq!(cpp_cmds[0].program, Language::Cpp.driver());
     }
 
     /// The archiver fallback chain is platform-specific: Unix has exactly one
