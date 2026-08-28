@@ -104,6 +104,16 @@ impl CMakeProject {
                 .collect();
             out.push_str(&format!("include_dirs = [{}]\n", dirs.join(", ")));
         }
+        let system_libs: Vec<String> = self
+            .link_libs
+            .iter()
+            .filter(|l| is_system_lib(l))
+            .map(|l| strip_lib_flag(l).to_string())
+            .collect();
+        if !system_libs.is_empty() {
+            let libs: Vec<String> = system_libs.iter().map(|l| format!("\"{l}\"")).collect();
+            out.push_str(&format!("libs = [{}]\n", libs.join(", ")));
+        }
         out.push('\n');
 
         out.push_str("[features]\ndefault = []\n\n");
@@ -120,12 +130,17 @@ impl CMakeProject {
         out.push('\n');
 
         out.push_str("[dependencies]\n");
-        if !self.link_libs.is_empty() {
+        let other_libs: Vec<&String> = self
+            .link_libs
+            .iter()
+            .filter(|l| !is_system_lib(l))
+            .collect();
+        if !other_libs.is_empty() {
             out.push_str(
                 "# TODO: map these CMake target_link_libraries to cbld `gh:user/lib` deps\n\
                  # (cbld cannot infer a repository from a bare library name):\n",
             );
-            for lib in &self.link_libs {
+            for lib in other_libs {
                 out.push_str(&format!(
                     "# \"gh:<user>/{lib}\" = \"x.y.z\"  # was: {lib}\n"
                 ));
@@ -223,6 +238,25 @@ fn unquote(token: &str) -> String {
         }
     }
     t.to_string()
+}
+
+fn strip_lib_flag(name: &str) -> &str {
+    name.strip_prefix("-l").unwrap_or(name)
+}
+
+fn is_system_lib(name: &str) -> bool {
+    let name = strip_lib_flag(name);
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains(['/', '\\', ':', '$', '<', '>', ';']) || name.contains("::") {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    !(lower.ends_with(".a")
+        || lower.ends_with(".so")
+        || lower.ends_with(".lib")
+        || lower.ends_with(".dylib"))
 }
 
 /// Find every invocation of `command(...)` and return the raw argument text
@@ -402,6 +436,8 @@ mod tests {
         }
         assert!(manifest.contains("[package]"));
         assert!(manifest.contains("include_dirs = [\"include\"]"));
+        assert!(manifest.contains("libs = [\"pthread\"]"));
+        assert!(!manifest.contains("gh:<user>/pthread"));
         assert!(!manifest.contains("extra_flags"));
     }
 
@@ -419,6 +455,19 @@ mod tests {
 
         let manifest = project.render_manifest();
         assert!(!manifest.contains("# TODO: Manually resolve mixed-language translation units"));
+    }
+
+    #[test]
+    fn cmake_link_libs_split_system_names_from_targets() {
+        let text = r#"
+            project(tool)
+            add_executable(tool main.c)
+            target_link_libraries(tool PUBLIC pthread m Foo::Bar /opt/libfoo.a)
+        "#;
+        let manifest = parse_cmake(text).render_manifest();
+        assert!(manifest.contains("libs = [\"m\", \"pthread\"]"));
+        assert!(manifest.contains("# \"gh:<user>/Foo::Bar\""));
+        assert!(manifest.contains("# \"gh:<user>//opt/libfoo.a\""));
     }
 
     /// Reporting helpers must never panic, mixed-language or not — this is
