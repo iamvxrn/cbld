@@ -38,6 +38,7 @@ exceptions = true
 | `source_dir` | Source scan root (default `src`) |
 | `include_dirs` | Extra `-I` paths relative to package root |
 | `defines` | Project-wide `-D` defines for C and C++ |
+| `libs` | System libraries passed as `-l` when linking an executable (`pthread`, `m`, …) |
 | `ignore_warnings` | Inject `-w` for all translation units |
 | `kind` | `bin` / `lib` when the entry file name does not imply the artifact type; `header` for include-only (no archive) |
 | `include` / `exclude` | Glob patterns to narrow the source scan |

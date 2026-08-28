@@ -111,7 +111,7 @@ Generate a starter `cbld.toml` from an existing CMake project.
 cbld migrate --from=cmake --path .
 ```
 
-Only `--from=cmake` is implemented (reads `CMakeLists.txt`). Include directories become `[package] include_dirs`.
+Only `--from=cmake` is implemented (reads `CMakeLists.txt`). Include directories become `[package] include_dirs`. Bare `target_link_libraries` names (`pthread`, `m`, …) become `[package] libs`; CMake targets and paths stay as TODO comments.
 
 ## `completions`
 

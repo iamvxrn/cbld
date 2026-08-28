@@ -4,6 +4,8 @@
 
 Parse clang diagnostics on Windows drive-letter paths. Include headers in the library cache key. Link with the same compiler driver used to compile (`zig cc` is invoked as `zig` + `cc`).
 
+`[package] libs` are passed to the linker as `-l`. `cbld migrate` writes those names instead of commenting them as `gh:<user>/pthread`.
+
 ## [0.4.0] - 2026-08-27
 
 Overlay recipes for upstream trees that have no `cbld.toml`, plus header-only packages.
