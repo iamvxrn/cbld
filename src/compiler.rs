@@ -1371,7 +1371,8 @@ mod tests {
         let cross = compiler_with_target("wasm32-unknown-unknown");
         let objects = vec![PathBuf::from("main.o")];
 
-        let exe_cmds = cross.link_command(&objects, &PathBuf::from("app"), false, false, false, &[]);
+        let exe_cmds =
+            cross.link_command(&objects, &PathBuf::from("app"), false, false, false, &[]);
         assert_eq!(exe_cmds.len(), 1);
         let target_pos = exe_cmds[0]
             .args

@@ -1272,18 +1272,27 @@ fn pkg_config_cflags(names: &[String], verbose: bool) -> Result<Vec<String>> {
         cmd.arg(n);
     }
     if verbose {
-        eprintln!("  \x1b[2m[pkg-config]\x1b[0m {}", format!("pkg-config --cflags {}", names.join(" ")));
+        eprintln!(
+            "  \x1b[2m[pkg-config]\x1b[0m {}",
+            format!("pkg-config --cflags {}", names.join(" "))
+        );
     }
-    let out = cmd.output().map_err(|e| CbldError::Environment(format!(
-        "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
-        names.join(", ")
-    )))?;
+    let out = cmd.output().map_err(|e| {
+        CbldError::Environment(format!(
+            "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
+            names.join(", ")
+        ))
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(CbldError::Config(format!(
             "pkg-config --cflags {} failed: {}",
             names.join(" "),
-            if stderr.is_empty() { "package not found".to_string() } else { stderr }
+            if stderr.is_empty() {
+                "package not found".to_string()
+            } else {
+                stderr
+            }
         )));
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -1300,18 +1309,27 @@ fn pkg_config_libs(names: &[String], verbose: bool) -> Result<Vec<String>> {
         cmd.arg(n);
     }
     if verbose {
-        eprintln!("  \x1b[2m[pkg-config]\x1b[0m {}", format!("pkg-config --libs {}", names.join(" ")));
+        eprintln!(
+            "  \x1b[2m[pkg-config]\x1b[0m {}",
+            format!("pkg-config --libs {}", names.join(" "))
+        );
     }
-    let out = cmd.output().map_err(|e| CbldError::Environment(format!(
-        "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
-        names.join(", ")
-    )))?;
+    let out = cmd.output().map_err(|e| {
+        CbldError::Environment(format!(
+            "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
+            names.join(", ")
+        ))
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(CbldError::Config(format!(
             "pkg-config --libs {} failed: {}",
             names.join(" "),
-            if stderr.is_empty() { "package not found".to_string() } else { stderr }
+            if stderr.is_empty() {
+                "package not found".to_string()
+            } else {
+                stderr
+            }
         )));
     }
     let text = String::from_utf8_lossy(&out.stdout);
