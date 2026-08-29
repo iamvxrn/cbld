@@ -31,6 +31,7 @@ use crate::trace;
 pub enum Crate {
     Executable,
     Library,
+    Shared,
     Header,
 }
 
@@ -40,9 +41,10 @@ impl Crate {
         match raw.trim().to_ascii_lowercase().as_str() {
             "bin" | "exe" | "executable" | "binary" => Ok(Crate::Executable),
             "lib" | "library" | "staticlib" | "static" => Ok(Crate::Library),
+            "shared" | "sharedlib" | "cdylib" | "dylib" | "so" | "dll" => Ok(Crate::Shared),
             "header" | "headers" | "header-only" | "hdr" => Ok(Crate::Header),
             other => Err(CbldError::Config(format!(
-                "unknown [package] kind '{other}' (expected 'bin', 'lib', or 'header')"
+                "unknown [package] kind '{other}' (expected 'bin', 'lib', 'shared', or 'header')"
             ))),
         }
     }
@@ -502,7 +504,10 @@ impl Engine {
         let mut has_cpp = false;
         for src in &sources {
             let obj = object_path(&obj_dir, layout, src);
-            let unit = compiler.compile_unit(src, &obj)?;
+            let mut unit = compiler.compile_unit(src, &obj)?;
+            if layout.crate_kind == Crate::Shared {
+                unit.args.push("-fPIC".to_string());
+            }
             if unit.language == Language::Cpp {
                 has_cpp = true;
             }
@@ -604,12 +609,12 @@ impl Engine {
             fs::create_dir_all(parent).path_ctx(parent)?;
         }
 
-        // Static archives of dependencies are linked only into executables.
-        // GNU ld / lld are single-pass: dependents must appear before the
-        // libraries they need, so the caller collects archives in reverse
-        // topological order (see `build_dependencies`).
+        // Static archives of dependencies are linked only into executables
+        // and shared libs. GNU ld / lld are single-pass: dependents must
+        // appear before the libraries they need, so the caller collects
+        // archives in reverse topological order (see `build_dependencies`).
         let mut link_inputs = objects;
-        if layout.crate_kind == Crate::Executable {
+        if layout.crate_kind == Crate::Executable || layout.crate_kind == Crate::Shared {
             link_inputs.extend(dep_archives.iter().cloned());
         }
         let link = compiler.link_command(
@@ -617,6 +622,7 @@ impl Engine {
             &artifact,
             has_cpp,
             layout.crate_kind == Crate::Library,
+            layout.crate_kind == Crate::Shared,
             &package.libs,
         );
         self.run_link(&link, layout.crate_kind)?;
@@ -625,6 +631,7 @@ impl Engine {
             let kind = match layout.crate_kind {
                 Crate::Executable => "executable",
                 Crate::Library => "library",
+                Crate::Shared => "shared library",
                 Crate::Header => "header",
             };
             println!(
@@ -872,6 +879,7 @@ impl Engine {
                 let verb = match kind {
                     Crate::Executable => "Linking",
                     Crate::Library => "Archiving",
+                    Crate::Shared => "Linking",
                     Crate::Header => "Header",
                 };
                 println!("\x1b[1;32m     {verb}\x1b[0m via {}", link.program);
@@ -1221,6 +1229,15 @@ fn artifact_path(
                 format!("{name}.lib")
             } else {
                 format!("lib{name}.a")
+            }
+        }
+        Crate::Shared => {
+            if cfg!(target_os = "windows") {
+                format!("{name}.dll")
+            } else if cfg!(target_os = "macos") {
+                format!("lib{name}.dylib")
+            } else {
+                format!("lib{name}.so")
             }
         }
         Crate::Header => name.to_string(),
