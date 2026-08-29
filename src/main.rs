@@ -1084,8 +1084,6 @@ fn cmd_init(args: InitArgs, quiet: bool, json: bool) -> Result<()> {
     let res = (|| -> Result<()> {
         let root = &args.path;
         std::fs::create_dir_all(root).path_ctx(root)?;
-        let src = root.join("src");
-        std::fs::create_dir_all(&src).path_ctx(&src)?;
 
         let name = match &args.name {
             Some(n) => n.clone(),
@@ -1095,6 +1093,107 @@ fn cmd_init(args: InitArgs, quiet: bool, json: bool) -> Result<()> {
                 .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "my_project".to_string()),
         };
+
+        if let Some(template) = args.template.as_deref() {
+            let tmpl = template.trim();
+            if tmpl.is_empty() {
+                return Err(CbldError::Config("empty --template value".into()));
+            }
+            // Template path must be empty or not exist as cbld package.
+            if root.join("cbld.toml").exists() {
+                return Err(CbldError::LayoutViolation(format!(
+                    "{} already contains cbld.toml; refusing to overwrite with template",
+                    root.display()
+                )));
+            }
+            // Check if root is non-empty (besides .gitignore).
+            if let Ok(entries) = std::fs::read_dir(root) {
+                let non_empty = entries.filter_map(|e| e.ok()).any(|e| {
+                    let n = e.file_name();
+                    n != ".git" && n != ".gitignore"
+                });
+                if non_empty {
+                    return Err(CbldError::LayoutViolation(format!(
+                        "{} is not empty; --template requires an empty directory",
+                        root.display()
+                    )));
+                }
+            }
+
+            // Local directory template?
+            if let Ok(meta) = std::fs::metadata(tmpl) {
+                if meta.is_dir() {
+                    copy_tree_excluding_git(Path::new(tmpl), root)?;
+                } else {
+                    return Err(CbldError::Config(format!(
+                        "template path is not a directory: {tmpl}"
+                    )));
+                }
+            } else {
+                let url = resolve_template_url(tmpl);
+                // Remote git template: clone to temp then copy.
+                let tmp = std::env::temp_dir().join(format!("cbld-tmpl-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&tmp);
+                let mut cmd = Command::new("git");
+                cmd.args([
+                    "clone",
+                    "--depth",
+                    "1",
+                    &url,
+                    tmp.to_string_lossy().as_ref(),
+                ]);
+                let out = cmd.output().map_err(|e| CbldError::CommandSpawn {
+                    program: "git".into(),
+                    source: e,
+                })?;
+                if !out.status.success() {
+                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    return Err(CbldError::CommandFailed {
+                        program: "git".into(),
+                        code: out.status.code(),
+                        stderr: if stderr.is_empty() {
+                            format!("git clone {url} failed")
+                        } else {
+                            stderr
+                        },
+                    });
+                }
+                copy_tree_excluding_git(&tmp, root)?;
+                let _ = std::fs::remove_dir_all(&tmp);
+            }
+
+            // Update package name in the template's cbld.toml if present.
+            let manifest_path = root.join("cbld.toml");
+            if manifest_path.is_file() {
+                if let Ok(text) = std::fs::read_to_string(&manifest_path) {
+                    if let Ok(mut manifest) = toml::from_str::<Manifest>(&text) {
+                        if let Some(pkg) = manifest.package.as_mut() {
+                            pkg.name = name.clone();
+                        }
+                        if let Ok(new_text) = toml::to_string_pretty(&manifest) {
+                            let _ = std::fs::write(&manifest_path, new_text);
+                        }
+                    }
+                }
+            }
+
+            // Ensure .gitignore exists.
+            let gitignore = root.join(".gitignore");
+            if !gitignore.exists() {
+                std::fs::write(&gitignore, "/target\n").path_ctx(&gitignore)?;
+            }
+
+            if !quiet_eff {
+                println!(
+                    "\x1b[1;32m     Created\x1b[0m package '{name}' at {} from template {tmpl}",
+                    root.display()
+                );
+            }
+            return Ok(());
+        }
+
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).path_ctx(&src)?;
 
         let is_lib = args.lib && !args.bin;
         let is_c = args.c;
@@ -1334,6 +1433,35 @@ fn pkg_config_libs(names: &[String], verbose: bool) -> Result<Vec<String>> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text.split_whitespace().map(|s| s.to_string()).collect())
+}
+
+fn resolve_template_url(tmpl: &str) -> String {
+    let t = tmpl.trim();
+    if t.contains("://") || t.starts_with("git@") || t.ends_with(".git") {
+        return t.to_string();
+    }
+    if let Some(rest) = t.strip_prefix("gh:") {
+        let base = rest.trim_end_matches(".git");
+        return format!("https://github.com/{base}.git");
+    }
+    if let Some(rest) = t.strip_prefix("gl:") {
+        let base = rest.trim_end_matches(".git");
+        return format!("https://gitlab.com/{base}.git");
+    }
+    if let Some(rest) = t.strip_prefix("cb:") {
+        let base = rest.trim_end_matches(".git");
+        return format!("https://codeberg.org/{base}.git");
+    }
+    if let Some(rest) = t.strip_prefix("sh:") {
+        let base = rest.trim_end_matches(".git");
+        return format!("https://git.sr.ht/~{base}");
+    }
+    if t.contains('/') && !t.contains(' ') && !Path::new(t).exists() {
+        // Bare owner/repo → GitHub
+        let base = t.trim_end_matches(".git");
+        return format!("https://github.com/{base}.git");
+    }
+    t.to_string()
 }
 
 // --- Scaffolding templates -------------------------------------------------

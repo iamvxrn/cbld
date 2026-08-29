@@ -45,6 +45,7 @@ pub enum Command {
     Run(RunArgs),
 
     /// Create a new cbld package in the given directory (or current dir).
+    #[command(alias = "new")]
     Init(InitArgs),
 
     /// Re-resolve project dependencies and rewrite cbld.lock.
@@ -257,6 +258,10 @@ pub struct InitArgs {
     /// Generate C sources/profile instead of C++.
     #[arg(long)]
     pub c: bool,
+
+    /// Clone a template repository (gh shorthand, URL, or local path) instead of scaffolding from scratch.
+    #[arg(long, value_name = "TEMPLATE")]
+    pub template: Option<String>,
 }
 
 /// Arguments for `cbld update`.
