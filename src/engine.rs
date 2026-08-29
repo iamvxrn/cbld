@@ -580,20 +580,67 @@ impl Engine {
             }
         }
 
+        // Per-file incremental: skip TUs whose object is newer than source
+        // and all headers in the previous .d depfile.
+        let mut to_compile: Vec<CompileUnit> = Vec::new();
+        let mut all_objects: Vec<PathBuf> = Vec::with_capacity(units.len());
+        let mut skipped = 0usize;
+        for mut unit in units {
+            let depfile = unit.object.with_extension("d");
+            all_objects.push(unit.object.clone());
+            if object_is_fresh(&unit.source, &unit.object, &depfile) {
+                skipped += 1;
+                continue;
+            }
+            // Generate depfile for next incremental check.
+            unit.args.push("-MMD".to_string());
+            unit.args.push("-MP".to_string());
+            unit.args.push("-MF".to_string());
+            unit.args.push(depfile.to_string_lossy().to_string());
+            to_compile.push(unit);
+        }
+
         if !self.quiet {
-            println!(
-                "\x1b[1;32m   Compiling\x1b[0m {} v{} ({} unit{}, {} job{})",
-                package.name,
-                package.version,
-                units.len(),
-                plural(units.len()),
-                self.jobs,
-                plural(self.jobs),
-            );
+            if skipped > 0 && !to_compile.is_empty() {
+                println!(
+                    "\x1b[1;32m   Compiling\x1b[0m {} v{} ({} unit{}, {} job{}, {} up-to-date)",
+                    package.name,
+                    package.version,
+                    to_compile.len(),
+                    plural(to_compile.len()),
+                    self.jobs,
+                    plural(self.jobs),
+                    skipped
+                );
+            } else if skipped > 0 && to_compile.is_empty() {
+                println!(
+                    "\x1b[1;32m   Fresh\x1b[0m {} v{} ({} up-to-date)",
+                    package.name, package.version, skipped
+                );
+            } else {
+                println!(
+                    "\x1b[1;32m   Compiling\x1b[0m {} v{} ({} unit{}, {} job{})",
+                    package.name,
+                    package.version,
+                    to_compile.len(),
+                    plural(to_compile.len()),
+                    self.jobs,
+                    plural(self.jobs),
+                );
+            }
         }
 
         let started = Instant::now();
-        let objects = self.compile_all(units)?;
+        let objects = if to_compile.is_empty() {
+            all_objects
+        } else {
+            let compiled = self.compile_all(to_compile)?;
+            // compile_all returns objects for compiled units; merge with all_objects
+            // by replacing compiled entries. Simpler: just use all_objects since
+            // compiled objects are at same paths.
+            let _ = compiled;
+            all_objects
+        };
         if self.verbose {
             eprintln!(
                 "  \x1b[2m[engine]\x1b[0m compiled in {:.2}s",
@@ -1272,6 +1319,85 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
+fn object_is_fresh(source: &Path, object: &Path, depfile: &Path) -> bool {
+    let Ok(obj_meta) = fs::metadata(object) else {
+        return false;
+    };
+    let Ok(obj_mtime) = obj_meta.modified() else {
+        return false;
+    };
+    let Ok(src_meta) = fs::metadata(source) else {
+        return false;
+    };
+    let Ok(src_mtime) = src_meta.modified() else {
+        return false;
+    };
+    if src_mtime > obj_mtime {
+        return false;
+    }
+    // If depfile exists, check all header deps.
+    if let Ok(text) = fs::read_to_string(depfile) {
+        for dep in parse_depfile(&text) {
+            // dep may be absolute or relative; try as is, then relative to depfile dir.
+            let dep_path = PathBuf::from(&dep);
+            let candidate = if dep_path.is_absolute() {
+                dep_path
+            } else {
+                depfile.parent().unwrap_or(Path::new(".")).join(&dep_path)
+            };
+            // Also try source dir relative? depfile stores relative to build dir but we store absolute?
+            // Most deps are absolute or relative to package root via -I. Try both.
+            let check_paths = [
+                candidate.clone(),
+                // Also try as absolute via current dir
+                PathBuf::from(&dep),
+            ];
+            for p in &check_paths {
+                if let Ok(meta) = fs::metadata(p) {
+                    if let Ok(mtime) = meta.modified() {
+                        if mtime > obj_mtime {
+                            return false;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn parse_depfile(text: &str) -> Vec<String> {
+    // depfile is Makefile: "obj.o: src.c header.h \"
+    // Handle line continuations and split.
+    let mut cleaned = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&'\n') = chars.peek() {
+                chars.next();
+                cleaned.push(' ');
+                continue;
+            }
+        }
+        if c == '\n' {
+            cleaned.push(' ');
+        } else {
+            cleaned.push(c);
+        }
+    }
+    // Find colon, deps are after it.
+    let Some(colon) = cleaned.find(':') else {
+        return Vec::new();
+    };
+    let after = &cleaned[colon + 1..];
+    after
+        .split_whitespace()
+        .filter(|s| *s != "\\")
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Determine a sensible default parallelism when `-j` is not provided.
 pub fn default_jobs() -> usize {
     thread::available_parallelism()
@@ -1322,6 +1448,7 @@ mod tests {
             include_dirs: Vec::new(),
             defines: Vec::new(),
             libs: Vec::new(),
+            pkg_config: Vec::new(),
             ignore_warnings: false,
             kind: None,
             include: Vec::new(),
@@ -1614,6 +1741,7 @@ mod tests {
             include_dirs: Vec::new(),
             defines: Vec::new(),
             libs: Vec::new(),
+            pkg_config: Vec::new(),
             ignore_warnings: false,
             kind: None,
             include: Vec::new(),
