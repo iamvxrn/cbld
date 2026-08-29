@@ -42,6 +42,7 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
         check_fetch_tool(),
         check_system_headers(),
         check_cbld_home(),
+        check_pkg_config(),
         check_overlay_recipes(),
     ];
     if let Some(toolchain) = check_toolchain_pin() {
@@ -340,6 +341,23 @@ fn check_fetch_tool() -> Check {
              required for `cbld sync` and dependency reachability probing"
                 .into(),
         ),
+    }
+}
+
+fn check_pkg_config() -> Check {
+    match Command::new("pkg-config").arg("--version").output() {
+        Ok(out) if out.status.success() => Check {
+            name: "pkg-config",
+            ok: true,
+            detail: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            fix: None,
+        },
+        _ => Check {
+            name: "pkg-config",
+            ok: false,
+            detail: "not found on PATH (needed for [package] pkg_config)".to_string(),
+            fix: Some("install pkg-config (e.g. `sudo apt install pkg-config`, `brew install pkg-config`)".into()),
+        },
     }
 }
 

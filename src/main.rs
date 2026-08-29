@@ -100,6 +100,7 @@ struct BuildOutcome {
 struct DepArtifacts {
     includes: Vec<PathBuf>,
     archives: Vec<PathBuf>,
+    pkg_libs: Vec<String>,
     cache_hits: usize,
     compile_commands: Vec<compdb::CompileCommandEntry>,
 }
@@ -294,7 +295,7 @@ fn build_single(
     // `require_package` runs before layout discovery so `[package] source_dir`
     // (and the CLI `--from` override) can redirect where cbld looks for the
     // entry point — legacy trees whose sources don't live under `src/`.
-    let package = require_package(manifest, root)?;
+    let mut package = require_package(manifest, root)?;
     let scan = scan_config(args.from.as_deref(), &package)?;
     let layout = Layout::assert_cbld_standard(root, &scan)?;
 
@@ -361,9 +362,18 @@ fn build_single(
     let mut include_dirs = package_include_dirs(root, &package);
     include_dirs.extend(deps.includes);
 
+    let pkg_cflags = pkg_config_cflags(&package.pkg_config, verbose)?;
+    let mut pkg_libs = pkg_config_libs(&package.pkg_config, verbose)?;
+    pkg_libs.extend(deps.pkg_libs.clone());
+    package.libs.extend(pkg_libs);
+    let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
+    let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
+    c_profile.extra_flags.extend(pkg_cflags.clone());
+    cpp_profile.extra_flags.extend(pkg_cflags);
+
     let compiler = Compiler::new(
-        manifest.profile.c.clone().unwrap_or_default(),
-        manifest.profile.cpp.clone().unwrap_or_default(),
+        c_profile,
+        cpp_profile,
         root,
         include_dirs,
         &features,
@@ -537,6 +547,7 @@ fn build_dependencies(
 ) -> Result<DepArtifacts> {
     let mut includes = Vec::new();
     let mut archives = Vec::new();
+    let mut pkg_libs = Vec::new();
     let mut cache_hits = 0usize;
     let mut compile_commands = Vec::new();
     let index = PackageIndex::load()?;
@@ -581,9 +592,16 @@ fn build_dependencies(
         // being actively worked on, not its (already-stable) dependencies.
         // They *are* cross-compiled for `cross_target`, though — see the
         // doc comment above.
+        let dep_pkg_cflags = pkg_config_cflags(&dep_package.pkg_config, verbose)?;
+        let dep_pkg_libs = pkg_config_libs(&dep_package.pkg_config, verbose)?;
+        pkg_libs.extend(dep_pkg_libs.clone());
+        let mut dep_c = dep_manifest.profile.c.clone().unwrap_or_default();
+        let mut dep_cpp = dep_manifest.profile.cpp.clone().unwrap_or_default();
+        dep_c.extra_flags.extend(dep_pkg_cflags.clone());
+        dep_cpp.extra_flags.extend(dep_pkg_cflags);
         let dep_compiler = Compiler::new(
-            dep_manifest.profile.c.clone().unwrap_or_default(),
-            dep_manifest.profile.cpp.clone().unwrap_or_default(),
+            dep_c,
+            dep_cpp,
             &dep.cache_path,
             package_include_dirs(&dep.cache_path, &dep_package),
             &dep_features,
@@ -625,6 +643,7 @@ fn build_dependencies(
     Ok(DepArtifacts {
         includes,
         archives,
+        pkg_libs,
         cache_hits,
         compile_commands,
     })
@@ -849,6 +868,7 @@ fn analysis_compiler(
     };
     let index = PackageIndex::load()?;
     let mut include_dirs = package_include_dirs(root, &package);
+    let mut dep_pkg_cflags: Vec<String> = Vec::new();
     for dep in &resolved {
         let dep_manifest = index.effective_manifest(
             &dep.cache_path,
@@ -859,14 +879,24 @@ fn analysis_compiler(
         )?;
         if let Some(pkg) = dep_manifest.package {
             include_dirs.extend(dependency_include_dirs(&dep.cache_path, &pkg));
+            if !pkg.pkg_config.is_empty() {
+                dep_pkg_cflags.extend(pkg_config_cflags(&pkg.pkg_config, verbose)?);
+            }
         }
     }
 
     let features = manifest.resolve_features(features, no_default_features);
     let target = effective_target(target, manifest);
+    let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
+    let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
+    let root_cflags = pkg_config_cflags(&package.pkg_config, verbose)?;
+    c_profile.extra_flags.extend(root_cflags.clone());
+    c_profile.extra_flags.extend(dep_pkg_cflags.clone());
+    cpp_profile.extra_flags.extend(root_cflags);
+    cpp_profile.extra_flags.extend(dep_pkg_cflags);
     let compiler = Compiler::new(
-        manifest.profile.c.clone().unwrap_or_default(),
-        manifest.profile.cpp.clone().unwrap_or_default(),
+        c_profile,
+        cpp_profile,
         root,
         include_dirs,
         &features,
@@ -1230,6 +1260,62 @@ fn short_sha(sha: &str) -> &str {
     } else {
         sha
     }
+}
+
+fn pkg_config_cflags(names: &[String], verbose: bool) -> Result<Vec<String>> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut cmd = Command::new("pkg-config");
+    cmd.arg("--cflags");
+    for n in names {
+        cmd.arg(n);
+    }
+    if verbose {
+        eprintln!("  \x1b[2m[pkg-config]\x1b[0m {}", format!("pkg-config --cflags {}", names.join(" ")));
+    }
+    let out = cmd.output().map_err(|e| CbldError::Environment(format!(
+        "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
+        names.join(", ")
+    )))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(CbldError::Config(format!(
+            "pkg-config --cflags {} failed: {}",
+            names.join(" "),
+            if stderr.is_empty() { "package not found".to_string() } else { stderr }
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.split_whitespace().map(|s| s.to_string()).collect())
+}
+
+fn pkg_config_libs(names: &[String], verbose: bool) -> Result<Vec<String>> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut cmd = Command::new("pkg-config");
+    cmd.arg("--libs");
+    for n in names {
+        cmd.arg(n);
+    }
+    if verbose {
+        eprintln!("  \x1b[2m[pkg-config]\x1b[0m {}", format!("pkg-config --libs {}", names.join(" ")));
+    }
+    let out = cmd.output().map_err(|e| CbldError::Environment(format!(
+        "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
+        names.join(", ")
+    )))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(CbldError::Config(format!(
+            "pkg-config --libs {} failed: {}",
+            names.join(" "),
+            if stderr.is_empty() { "package not found".to_string() } else { stderr }
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.split_whitespace().map(|s| s.to_string()).collect())
 }
 
 // --- Scaffolding templates -------------------------------------------------

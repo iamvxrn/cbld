@@ -729,11 +729,14 @@ impl Compiler {
             args.push("-o".to_string());
             args.push(output.to_string_lossy().to_string());
             for lib in libs {
-                let name = lib.strip_prefix("-l").unwrap_or(lib);
-                if name.is_empty() {
+                if lib.is_empty() {
                     continue;
                 }
-                args.push(format!("-l{name}"));
+                if lib.starts_with('-') {
+                    args.push(lib.clone());
+                } else {
+                    args.push(format!("-l{lib}"));
+                }
             }
             return vec![LinkCommand {
                 program: driver.to_string(),
@@ -782,11 +785,14 @@ impl Compiler {
         args.push("-o".to_string());
         args.push(output.to_string_lossy().to_string());
         for lib in libs {
-            let name = lib.strip_prefix("-l").unwrap_or(lib);
-            if name.is_empty() {
+            if lib.is_empty() {
                 continue;
             }
-            args.push(format!("-l{name}"));
+            if lib.starts_with('-') {
+                args.push(lib.clone());
+            } else {
+                args.push(format!("-l{lib}"));
+            }
         }
         vec![LinkCommand {
             program: driver.to_string(),

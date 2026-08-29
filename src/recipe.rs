@@ -68,6 +68,7 @@ impl Recipe {
                 include_dirs: self.include_dirs.clone(),
                 defines: self.defines.clone(),
                 libs: Vec::new(),
+                pkg_config: Vec::new(),
                 ignore_warnings: self.ignore_warnings,
                 kind: self.kind.clone(),
                 include: self.include.clone(),

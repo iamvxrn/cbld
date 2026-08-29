@@ -95,6 +95,11 @@ pub struct Package {
     /// executable (e.g. `pthread`, `m`). Ignored for static libraries.
     #[serde(default)]
     pub libs: Vec<String>,
+    /// pkg-config packages to query for cflags/libs (e.g. `openssl`, `zlib`).
+    /// Cflags are injected into every TU, libs into the final link. Requires
+    /// `pkg-config` on PATH (`cbld doctor` checks it).
+    #[serde(default)]
+    pub pkg_config: Vec<String>,
     /// Suppress all compiler warnings by injecting `-w`. A blunt escape hatch
     /// for building noisy legacy code you don't own. `cbld build
     /// --ignore-warnings` turns this on from the CLI regardless of the
@@ -103,14 +108,15 @@ pub struct Package {
     pub ignore_warnings: bool,
 
     // --- Artifact kind and scan globs ------------------------------------
-    /// Artifact kind: `"bin"` (executable), `"lib"` (library), or `"header"`
-    /// (include-only, no archive). When set to `bin`/`lib`, cbld no longer
-    /// requires a canonically-named `main.*`/`lib.*` entry file — real
-    /// libraries whose sources are named `cJSON.c` or `format.cc` build as-is.
-    /// `header` skips compilation entirely. Unset (the default) keeps the
-    /// strict behavior: the entry file's name decides the kind. Accepts
-    /// `bin`/`exe`/`executable`, `lib`/`library`, and `header`/`header-only`
-    /// (see `Crate::parse`).
+    /// Artifact kind: `"bin"` (executable), `"lib"` (static library),
+    /// `"shared"` (shared library), or `"header"` (include-only, no archive).
+    /// When set to `bin`/`lib`/`shared`, cbld no longer requires a
+    /// canonically-named `main.*`/`lib.*` entry file — real libraries whose
+    /// sources are named `cJSON.c` or `format.cc` build as-is. `header` skips
+    /// compilation entirely. Unset (the default) keeps the strict behavior:
+    /// the entry file's name decides the kind. Accepts `bin`/`exe`/`executable`,
+    /// `lib`/`library`/`static`, `shared`/`cdylib`/`dylib`, and
+    /// `header`/`header-only` (see `Crate::parse`).
     #[serde(default)]
     pub kind: Option<String>,
     /// Glob patterns (relative to `source_dir`) that restrict the scan: when
