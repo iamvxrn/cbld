@@ -1273,8 +1273,8 @@ fn pkg_config_cflags(names: &[String], verbose: bool) -> Result<Vec<String>> {
     }
     if verbose {
         eprintln!(
-            "  \x1b[2m[pkg-config]\x1b[0m {}",
-            format!("pkg-config --cflags {}", names.join(" "))
+            "  \x1b[2m[pkg-config]\x1b[0m pkg-config --cflags {}",
+            names.join(" ")
         );
     }
     let out = cmd.output().map_err(|e| {
@@ -1310,8 +1310,8 @@ fn pkg_config_libs(names: &[String], verbose: bool) -> Result<Vec<String>> {
     }
     if verbose {
         eprintln!(
-            "  \x1b[2m[pkg-config]\x1b[0m {}",
-            format!("pkg-config --libs {}", names.join(" "))
+            "  \x1b[2m[pkg-config]\x1b[0m pkg-config --libs {}",
+            names.join(" ")
         );
     }
     let out = cmd.output().map_err(|e| {
