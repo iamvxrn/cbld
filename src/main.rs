@@ -45,16 +45,16 @@ fn main() {
 
     let result = match cli.command {
         Cmd::Build(args) => cmd_build_top_level(args, verbose, quiet, json),
-        Cmd::Run(args) => cmd_run(args, verbose, quiet),
-        Cmd::Init(args) => cmd_init(args, quiet),
-        Cmd::Update(args) => cmd_update(args, verbose, quiet),
+        Cmd::Run(args) => cmd_run(args, verbose, quiet, json),
+        Cmd::Init(args) => cmd_init(args, quiet, json),
+        Cmd::Update(args) => cmd_update(args, verbose, quiet, json),
         Cmd::Doctor => doctor::run(verbose, json),
-        Cmd::Sync => cmd_sync(verbose, quiet),
-        Cmd::Migrate(args) => migrate::run(&args, quiet),
-        Cmd::Vendor(args) => cmd_vendor(args, verbose, quiet),
-        Cmd::Check(args) => cmd_check(args, verbose, quiet),
-        Cmd::Fmt(args) => cmd_fmt(args, verbose, quiet),
-        Cmd::Lint(args) => cmd_lint(args, verbose, quiet),
+        Cmd::Sync => cmd_sync(verbose, quiet, json),
+        Cmd::Migrate(args) => cmd_migrate(args, quiet, json),
+        Cmd::Vendor(args) => cmd_vendor(args, verbose, quiet, json),
+        Cmd::Check(args) => cmd_check(args, verbose, quiet, json),
+        Cmd::Fmt(args) => cmd_fmt(args, verbose, quiet, json),
+        Cmd::Lint(args) => cmd_lint(args, verbose, quiet, json),
         Cmd::Completions(args) => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
@@ -64,6 +64,11 @@ fn main() {
     };
 
     if let Err(err) = result {
+        if json {
+            // JSON already emitted by the command wrapper (or by build_top_level).
+            // Don't duplicate human diagnostics.
+            std::process::exit(1);
+        }
         eprintln!("\x1b[1;31merror\x1b[0m: {err}");
         // Print the cause chain for deeper context.
         let mut source = std::error::Error::source(&err);
@@ -203,9 +208,51 @@ fn build_with_diagnostics(
 /// Strictly an index refresh: no manifest is loaded, no dependency is
 /// resolved, and `cbld.lock` is never touched. Use `cbld update` to
 /// re-resolve a project's dependencies instead.
-fn cmd_sync(verbose: bool, quiet: bool) -> Result<()> {
-    let resolver = Resolver::new(verbose)?;
-    resolver.sync_index(quiet)
+fn cmd_sync(verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let res = (|| {
+        let resolver = Resolver::new(verbose)?;
+        resolver.sync_index(quiet)
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
+    }
+    res
+}
+
+fn cmd_migrate(args: cli::MigrateArgs, quiet: bool, json: bool) -> Result<()> {
+    let res = migrate::run(&args, quiet);
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
+    }
+    res
 }
 
 /// `cbld build`
@@ -584,33 +631,54 @@ fn build_dependencies(
 }
 
 /// `cbld run`
-fn cmd_run(args: RunArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let outcome = build_with_diagnostics(args.build, verbose, quiet, false)?;
-    if outcome.crate_kind != Crate::Executable {
-        return Err(CbldError::LayoutViolation(
-            "`cbld run` requires an executable (src/main.cpp or src/main.c)".into(),
-        ));
-    }
+fn cmd_run(args: RunArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res: Result<()> = (|| {
+        let outcome = build_with_diagnostics(args.build, verbose, quiet_eff, json)?;
+        if outcome.crate_kind != Crate::Executable {
+            return Err(CbldError::LayoutViolation(
+                "`cbld run` requires an executable (src/main.cpp or src/main.c)".into(),
+            ));
+        }
 
-    if !quiet {
-        println!(
-            "\x1b[1;32m     Running\x1b[0m {}",
-            outcome.artifact.display()
-        );
-    }
+        if !quiet_eff {
+            println!(
+                "\x1b[1;32m     Running\x1b[0m {}",
+                outcome.artifact.display()
+            );
+        }
 
-    let status = Command::new(&outcome.artifact)
-        .args(&args.bin_args)
-        .status()
-        .map_err(|source| CbldError::CommandSpawn {
-            program: outcome.artifact.display().to_string(),
-            source,
-        })?;
+        let status = Command::new(&outcome.artifact)
+            .args(&args.bin_args)
+            .status()
+            .map_err(|source| CbldError::CommandSpawn {
+                program: outcome.artifact.display().to_string(),
+                source,
+            })?;
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(())
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
     }
-    Ok(())
+    res
 }
 
 /// `cbld check` — run Clang's static analyzer over the package's own
@@ -620,50 +688,113 @@ fn cmd_run(args: RunArgs, verbose: bool, quiet: bool) -> Result<()> {
 /// `cbld build`) purely to expose their headers on the include path — they
 /// are never compiled or analyzed themselves, since `cbld check` audits the
 /// package you're working on, not its already-vetted dependencies.
-fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let root = project_root(args.manifest_path.as_deref())?;
-    let manifest = Manifest::load(&root)?;
-    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
-        let (layout, compiler) = analysis_compiler(
-            pkg_root,
-            pkg_manifest,
-            &args.features,
-            args.no_default_features,
-            args.target.as_deref(),
-            verbose,
-        )?;
-        let engine = Engine::new(resolve_jobs(args.jobs), verbose, quiet, false, false);
-        engine.check_package(&layout, &compiler)
-    })
+fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = project_root(args.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+            let (layout, compiler) = analysis_compiler(
+                pkg_root,
+                pkg_manifest,
+                &args.features,
+                args.no_default_features,
+                args.target.as_deref(),
+                verbose,
+            )?;
+            let engine = Engine::new(resolve_jobs(args.jobs), verbose, quiet_eff, json, false);
+            engine.check_package(&layout, &compiler)
+        })
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
+    }
+    res
 }
 
 /// `cbld fmt` — clang-format the package (or every workspace member).
-fn cmd_fmt(args: FmtArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let root = project_root(args.manifest_path.as_deref())?;
-    let manifest = Manifest::load(&root)?;
-    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
-        let package = require_package(pkg_manifest, pkg_root)?;
-        let scan = scan_config(None, &package)?;
-        let layout = Layout::assert_cbld_standard(pkg_root, &scan)?;
-        fmt::run(&layout, args.check, verbose, quiet)
-    })
+fn cmd_fmt(args: FmtArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = project_root(args.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+            let package = require_package(pkg_manifest, pkg_root)?;
+            let scan = scan_config(None, &package)?;
+            let layout = Layout::assert_cbld_standard(pkg_root, &scan)?;
+            fmt::run(&layout, args.check, verbose, quiet_eff)
+        })
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
+    }
+    res
 }
 
 /// `cbld lint` — clang-tidy the package (or every workspace member).
-fn cmd_lint(args: LintArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let root = project_root(args.manifest_path.as_deref())?;
-    let manifest = Manifest::load(&root)?;
-    for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
-        let (layout, compiler) = analysis_compiler(
-            pkg_root,
-            pkg_manifest,
-            &args.features,
-            args.no_default_features,
-            args.target.as_deref(),
-            verbose,
-        )?;
-        lint::run(&layout, &compiler, args.deny_warnings, verbose, quiet)
-    })
+fn cmd_lint(args: LintArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = project_root(args.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        for_each_package(&root, &manifest, |pkg_root, pkg_manifest| {
+            let (layout, compiler) = analysis_compiler(
+                pkg_root,
+                pkg_manifest,
+                &args.features,
+                args.no_default_features,
+                args.target.as_deref(),
+                verbose,
+            )?;
+            lint::run(&layout, &compiler, args.deny_warnings, verbose, quiet_eff)
+        })
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
+    }
+    res
 }
 
 /// Run `f` on a standalone package, or on each `[workspace] members` entry.
@@ -752,58 +883,79 @@ fn analysis_compiler(
 ///
 /// Strictly a dependency-graph refresh: it never fetches or rewrites the
 /// package index (`~/.cbld/cbld-libs`). Use `cbld sync` for that.
-fn cmd_update(args: UpdateArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let root = project_root(args.manifest_path.as_deref())?;
-    let manifest = Manifest::load(&root)?;
-    let resolver = Resolver::new(verbose)?;
+fn cmd_update(args: UpdateArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = project_root(args.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        let resolver = Resolver::new(verbose)?;
 
-    // Pass `None` so resolution fetches fresh HEAD SHAs rather than honoring
-    // the existing lock. If a single package was named, keep the others pinned.
-    let existing = Lockfile::load(&root)?;
-    let pin = match &args.package {
-        Some(_) => existing.as_ref(),
-        None => None,
-    };
-
-    let mut resolved = resolver.resolve_all(&manifest, pin)?;
-
-    // If a specific package was requested, re-resolve only that node
-    // (fresh SHA) while the rest stay at their locked SHAs.
-    if let Some(only) = &args.package {
-        let target = package_name(only);
-        let pos = resolved.iter().position(|d| d.name == target).ok_or_else(|| {
-            CbldError::Resolution(format!(
-                "'{only}' is not a dependency of this package (use the package name, e.g. the last segment of gh:owner/repo)"
-            ))
-        })?;
-        let existing = resolved[pos].clone();
-        let spec = Dependency {
-            version: existing.version.clone(),
-            features: existing.features.clone(),
-            tag: None,
+        // Pass `None` so resolution fetches fresh HEAD SHAs rather than honoring
+        // the existing lock. If a single package was named, keep the others pinned.
+        let existing = Lockfile::load(&root)?;
+        let pin = match &args.package {
+            Some(_) => existing.as_ref(),
+            None => None,
         };
-        resolved[pos] = resolver.resolve_one(&existing.shorthand, &spec, None)?;
-    }
 
-    let lock = build_lockfile(&resolved);
-    lock.save(&root)?;
+        let mut resolved = resolver.resolve_all(&manifest, pin)?;
 
-    if !quiet {
-        println!(
-            "\x1b[1;32m     Updated\x1b[0m {} dependenc{} in cbld.lock",
-            resolved.len(),
-            if resolved.len() == 1 { "y" } else { "ies" }
-        );
-        for dep in &resolved {
+        // If a specific package was requested, re-resolve only that node
+        // (fresh SHA) while the rest stay at their locked SHAs.
+        if let Some(only) = &args.package {
+            let target = package_name(only);
+            let pos = resolved.iter().position(|d| d.name == target).ok_or_else(|| {
+                CbldError::Resolution(format!(
+                    "'{only}' is not a dependency of this package (use the package name, e.g. the last segment of gh:owner/repo)"
+                ))
+            })?;
+            let existing = resolved[pos].clone();
+            let spec = Dependency {
+                version: existing.version.clone(),
+                features: existing.features.clone(),
+                tag: None,
+            };
+            resolved[pos] = resolver.resolve_one(&existing.shorthand, &spec, None)?;
+        }
+
+        let lock = build_lockfile(&resolved);
+        lock.save(&root)?;
+
+        if !quiet_eff {
             println!(
-                "            {} v{} @ {}",
-                dep.name,
-                dep.version,
-                short_sha(&dep.checksum)
+                "\x1b[1;32m     Updated\x1b[0m {} dependenc{} in cbld.lock",
+                resolved.len(),
+                if resolved.len() == 1 { "y" } else { "ies" }
+            );
+            for dep in &resolved {
+                println!(
+                    "            {} v{} @ {}",
+                    dep.name,
+                    dep.version,
+                    short_sha(&dep.checksum)
+                );
+            }
+        }
+        Ok(())
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
             );
         }
     }
-    Ok(())
+    res
 }
 
 /// `cbld vendor` — copy every dependency in `cbld.lock` into a local
@@ -814,44 +966,65 @@ fn cmd_update(args: UpdateArgs, verbose: bool, quiet: bool) -> Result<()> {
 /// re-resolves a dependency to a different commit than what's locked — it
 /// only relocates already-resolved sources from the global cache into the
 /// project itself.
-fn cmd_vendor(args: VendorArgs, verbose: bool, quiet: bool) -> Result<()> {
-    let root = project_root(args.manifest_path.as_deref())?;
-    let manifest = Manifest::load(&root)?;
-    let lock = Lockfile::load(&root)?.ok_or_else(|| {
-        CbldError::Config("no cbld.lock found; run `cbld build` or `cbld update` first".into())
-    })?;
+fn cmd_vendor(args: VendorArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = project_root(args.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        let lock = Lockfile::load(&root)?.ok_or_else(|| {
+            CbldError::Config("no cbld.lock found; run `cbld build` or `cbld update` first".into())
+        })?;
 
-    let resolver = Resolver::new(verbose)?;
-    let resolved = resolver.resolve_all(&manifest, Some(&lock))?;
+        let resolver = Resolver::new(verbose)?;
+        let resolved = resolver.resolve_all(&manifest, Some(&lock))?;
 
-    let vendor_dir = root.join("third_party");
-    std::fs::create_dir_all(&vendor_dir).path_ctx(&vendor_dir)?;
+        let vendor_dir = root.join("third_party");
+        std::fs::create_dir_all(&vendor_dir).path_ctx(&vendor_dir)?;
 
-    for dep in &resolved {
-        let dest = vendor_dir.join(&dep.name);
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest).path_ctx(&dest)?;
+        for dep in &resolved {
+            let dest = vendor_dir.join(&dep.name);
+            if dest.exists() {
+                std::fs::remove_dir_all(&dest).path_ctx(&dest)?;
+            }
+            copy_tree_excluding_git(&dep.cache_path, &dest)?;
+            if !quiet_eff {
+                println!(
+                    "\x1b[1;32m    Vendored\x1b[0m {} v{} -> {}",
+                    dep.name,
+                    dep.version,
+                    dest.display()
+                );
+            }
         }
-        copy_tree_excluding_git(&dep.cache_path, &dest)?;
-        if !quiet {
+
+        if !quiet_eff {
             println!(
-                "\x1b[1;32m    Vendored\x1b[0m {} v{} -> {}",
-                dep.name,
-                dep.version,
-                dest.display()
+                "\x1b[1;32m   Finished\x1b[0m vendoring {} dependenc{} into {}",
+                resolved.len(),
+                if resolved.len() == 1 { "y" } else { "ies" },
+                vendor_dir.display()
+            );
+        }
+        Ok(())
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
             );
         }
     }
-
-    if !quiet {
-        println!(
-            "\x1b[1;32m   Finished\x1b[0m vendoring {} dependenc{} into {}",
-            resolved.len(),
-            if resolved.len() == 1 { "y" } else { "ies" },
-            vendor_dir.display()
-        );
-    }
-    Ok(())
+    res
 }
 
 /// Recursively copy a directory tree, skipping any `.git` directory — the
@@ -876,67 +1049,88 @@ fn copy_tree_excluding_git(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// `cbld init` — scaffold a new cbld-standard package.
-fn cmd_init(args: InitArgs, quiet: bool) -> Result<()> {
-    let root = &args.path;
-    std::fs::create_dir_all(root).path_ctx(root)?;
-    let src = root.join("src");
-    std::fs::create_dir_all(&src).path_ctx(&src)?;
+fn cmd_init(args: InitArgs, quiet: bool, json: bool) -> Result<()> {
+    let quiet_eff = quiet || json;
+    let res = (|| -> Result<()> {
+        let root = &args.path;
+        std::fs::create_dir_all(root).path_ctx(root)?;
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).path_ctx(&src)?;
 
-    let name = match &args.name {
-        Some(n) => n.clone(),
-        None => root
-            .canonicalize()
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "my_project".to_string()),
-    };
+        let name = match &args.name {
+            Some(n) => n.clone(),
+            None => root
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "my_project".to_string()),
+        };
 
-    let is_lib = args.lib && !args.bin;
-    let is_c = args.c;
+        let is_lib = args.lib && !args.bin;
+        let is_c = args.c;
 
-    // Pick entry file name + language.
-    let (entry_file, entry_body) = match (is_lib, is_c) {
-        (false, false) => ("main.cpp", CPP_MAIN),
-        (false, true) => ("main.c", C_MAIN),
-        (true, false) => ("lib.cpp", CPP_LIB),
-        (true, true) => ("lib.c", C_LIB),
-    };
+        // Pick entry file name + language.
+        let (entry_file, entry_body) = match (is_lib, is_c) {
+            (false, false) => ("main.cpp", CPP_MAIN),
+            (false, true) => ("main.c", C_MAIN),
+            (true, false) => ("lib.cpp", CPP_LIB),
+            (true, true) => ("lib.c", C_LIB),
+        };
 
-    let entry_path = src.join(entry_file);
-    if entry_path.exists() {
-        return Err(CbldError::LayoutViolation(format!(
-            "{} already exists; refusing to overwrite",
-            entry_path.display()
-        )));
+        let entry_path = src.join(entry_file);
+        if entry_path.exists() {
+            return Err(CbldError::LayoutViolation(format!(
+                "{} already exists; refusing to overwrite",
+                entry_path.display()
+            )));
+        }
+        std::fs::write(&entry_path, entry_body).path_ctx(&entry_path)?;
+
+        // Write the manifest.
+        let manifest_path = root.join("cbld.toml");
+        if !manifest_path.exists() {
+            let profile = if is_c { C_PROFILE } else { CPP_PROFILE };
+            let manifest = format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [features]\ndefault = []\n\n{profile}\n[dependencies]\n"
+            );
+            std::fs::write(&manifest_path, manifest).path_ctx(&manifest_path)?;
+        }
+
+        // A minimal .gitignore so target/ doesn't get committed.
+        let gitignore = root.join(".gitignore");
+        if !gitignore.exists() {
+            std::fs::write(&gitignore, "/target\n").path_ctx(&gitignore)?;
+        }
+
+        if !quiet_eff {
+            let kind = if is_lib { "library" } else { "executable" };
+            let lang = if is_c { "C" } else { "C++" };
+            println!(
+                "\x1b[1;32m     Created\x1b[0m {lang} {kind} package '{name}' at {}",
+                root.display()
+            );
+        }
+        Ok(())
+    })();
+    if json {
+        if let Err(ref e) = res {
+            println!(
+                "{}",
+                Json::Object(vec![
+                    ("status".to_string(), Json::str("failure")),
+                    ("message".to_string(), Json::str(e.to_string())),
+                ])
+                .render()
+            );
+        } else {
+            println!(
+                "{}",
+                Json::Object(vec![("status".to_string(), Json::str("success"))]).render()
+            );
+        }
     }
-    std::fs::write(&entry_path, entry_body).path_ctx(&entry_path)?;
-
-    // Write the manifest.
-    let manifest_path = root.join("cbld.toml");
-    if !manifest_path.exists() {
-        let profile = if is_c { C_PROFILE } else { CPP_PROFILE };
-        let manifest = format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
-             [features]\ndefault = []\n\n{profile}\n[dependencies]\n"
-        );
-        std::fs::write(&manifest_path, manifest).path_ctx(&manifest_path)?;
-    }
-
-    // A minimal .gitignore so target/ doesn't get committed.
-    let gitignore = root.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(&gitignore, "/target\n").path_ctx(&gitignore)?;
-    }
-
-    if !quiet {
-        let kind = if is_lib { "library" } else { "executable" };
-        let lang = if is_c { "C" } else { "C++" };
-        println!(
-            "\x1b[1;32m     Created\x1b[0m {lang} {kind} package '{name}' at {}",
-            root.display()
-        );
-    }
-    Ok(())
+    res
 }
 
 // ---------------------------------------------------------------------------

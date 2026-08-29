@@ -27,9 +27,6 @@ pub struct Cli {
     pub quiet: bool,
 
     /// Emit machine-readable JSON instead of human-readable text.
-    ///
-    /// Honored by `build` and `doctor`; other commands accept the flag (it's
-    /// global) but currently ignore it.
     #[arg(long, global = true)]
     pub json: bool,
 
