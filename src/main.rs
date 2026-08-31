@@ -19,6 +19,7 @@ mod manifest;
 mod migrate;
 mod recipe;
 mod resolver;
+mod test;
 mod trace;
 
 use std::path::{Path, PathBuf};
