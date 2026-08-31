@@ -559,7 +559,7 @@ impl Engine {
                     fs::copy(&cached, &artifact).path_ctx(&artifact)?;
                     if !self.quiet {
                         println!(
-                            "\x1b[1;32m  Cache hit\x1b[0m {} v{} [{}]",
+                            "\x1b[1;96m⚡ Cache hit\x1b[0m \x1b[1;97m{}\x1b[0m \x1b[93mv{}\x1b[0m \x1b[2m[{}]\x1b[0m",
                             package.name, package.version, key
                         );
                     }
@@ -603,7 +603,7 @@ impl Engine {
         if !self.quiet {
             if skipped > 0 && !to_compile.is_empty() {
                 println!(
-                    "\x1b[1;32m   Compiling\x1b[0m {} v{} ({} unit{}, {} job{}, {} up-to-date)",
+                    "\x1b[1;95m📦 Compiling\x1b[0m \x1b[1;97m{}\x1b[0m \x1b[93mv{}\x1b[0m (\x1b[96m{} unit{}\x1b[0m, \x1b[96m{} job{}\x1b[0m, \x1b[92m{} up-to-date\x1b[0m)",
                     package.name,
                     package.version,
                     to_compile.len(),
@@ -614,12 +614,12 @@ impl Engine {
                 );
             } else if skipped > 0 && to_compile.is_empty() {
                 println!(
-                    "\x1b[1;32m   Fresh\x1b[0m {} v{} ({} up-to-date)",
+                    "\x1b[1;92m✔ Fresh\x1b[0m \x1b[1;97m{}\x1b[0m \x1b[93mv{}\x1b[0m (\x1b[92m{} up-to-date\x1b[0m)",
                     package.name, package.version, skipped
                 );
             } else {
                 println!(
-                    "\x1b[1;32m   Compiling\x1b[0m {} v{} ({} unit{}, {} job{})",
+                    "\x1b[1;95m⚡ Compiling\x1b[0m \x1b[1;97m{}\x1b[0m \x1b[93mv{}\x1b[0m (\x1b[96m{} unit{}\x1b[0m, \x1b[96m{} job{}\x1b[0m)",
                     package.name,
                     package.version,
                     to_compile.len(),
@@ -682,13 +682,13 @@ impl Engine {
                 Crate::Header => "header",
             };
             println!(
-                "\x1b[1;32m    Finished\x1b[0m {} {} [{}]",
+                "\x1b[1;92m✔ Finished\x1b[0m \x1b[97m{}\x1b[0m \x1b[2m{}\x1b[0m \x1b[90m[{}]\x1b[0m",
                 kind,
                 artifact.display(),
                 if dest.release {
-                    "optimized"
+                    "\x1b[93moptimized\x1b[0m"
                 } else {
-                    "unoptimized + debuginfo"
+                    "\x1b[96munoptimized + debuginfo\x1b[0m"
                 }
             );
         }
@@ -737,7 +737,7 @@ impl Engine {
 
         if !self.quiet {
             println!(
-                "\x1b[1;36m   Checking\x1b[0m {} file{} ({} job{})",
+                "\x1b[1;96m🔍 Checking\x1b[0m \x1b[96m{} file{}\x1b[0m (\x1b[96m{} job{}\x1b[0m)",
                 units.len(),
                 plural(units.len()),
                 self.jobs,
@@ -923,13 +923,13 @@ impl Engine {
 
         for (i, link) in candidates.iter().enumerate() {
             if !self.quiet {
-                let verb = match kind {
-                    Crate::Executable => "Linking",
-                    Crate::Library => "Archiving",
-                    Crate::Shared => "Linking",
-                    Crate::Header => "Header",
+                let (verb, color, icon) = match kind {
+                    Crate::Executable => ("Linking", "\x1b[1;96m", "🔗"),
+                    Crate::Library => ("Archiving", "\x1b[1;93m", "📦"),
+                    Crate::Shared => ("Linking", "\x1b[1;95m", "🔗"),
+                    Crate::Header => ("Header", "\x1b[1;92m", "📄"),
                 };
-                println!("\x1b[1;32m     {verb}\x1b[0m via {}", link.program);
+                println!("{color}{icon} {verb}\x1b[0m via \x1b[96m{}\x1b[0m", link.program);
             }
             if self.verbose {
                 eprintln!(
