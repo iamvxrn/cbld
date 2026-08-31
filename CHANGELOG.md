@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
-Parse clang diagnostics on Windows drive-letter paths. Include headers in the library cache key. Link with the same compiler driver used to compile (`zig cc` is invoked as `zig` + `cc`). Add `cbld test` discovery, compilation, execution, common test-summary parsing, and JSON output. Add `cbld bench` discovery, execution, Google Benchmark-compatible console parsing, and JSON output. Add package-local C++20 modules and target presets with sysroot propagation and isolated cross-target output directories.
+Future changes.
 
-`[package] libs` are passed to the linker as `-l`. `cbld migrate` writes those names instead of commenting them as `gh:<user>/pthread`.
+## [0.5.0] - 2026-08-31
+
+- `cbld test`: discover, build, run, and parse C/C++ test suites with JSON output.
+- `cbld bench`: discover and run Google Benchmark-compatible binaries with normalized JSON results.
+- Package-local C++20 modules with BMI generation, import ordering, and cycle detection.
+- Cross-compilation target presets with `[target.<triple>] sysroot` and isolated output directories.
+- ASCII-only vibrant CLI output and updated documentation.
 
 ## [0.4.0] - 2026-08-27
 
