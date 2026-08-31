@@ -4,6 +4,7 @@
 //! `CbldError` into a clean, non-panicking process exit. All real logic lives
 //! in the dedicated modules.
 
+mod bench;
 mod cli;
 mod compdb;
 mod compiler;
@@ -27,8 +28,8 @@ use std::process::Command;
 use std::time::Instant;
 
 use cli::{
-    BuildArgs, CheckArgs, Cli, Command as Cmd, FmtArgs, InitArgs, LintArgs, RunArgs, TestArgs,
-    UpdateArgs, VendorArgs,
+    BenchArgs, BuildArgs, CheckArgs, Cli, Command as Cmd, FmtArgs, InitArgs, LintArgs, RunArgs,
+    TestArgs, UpdateArgs, VendorArgs,
 };
 use compiler::Compiler;
 use engine::{default_jobs, require_package, BuildDest, Crate, Engine, Layout, ScanConfig};
@@ -57,6 +58,7 @@ fn main() {
         Cmd::Fmt(args) => cmd_fmt(args, verbose, quiet, json),
         Cmd::Lint(args) => cmd_lint(args, verbose, quiet, json),
         Cmd::Test(args) => cmd_test(args, verbose, quiet, json),
+        Cmd::Bench(args) => cmd_bench(args, verbose, quiet, json),
         Cmd::Completions(args) => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
@@ -227,37 +229,19 @@ fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestO
     let active_features = manifest.resolve_features(&args.features, args.no_default_features);
     let target = effective_target(args.target.as_deref(), &manifest);
     let sources = test::collect_test_sources(&root)?;
-    let mut link_archives = Vec::new();
-
-    // A library package supplies the code under test. Standalone test trees
-    // without a buildable src/ package still work as well.
-    if let Some(package) = manifest.package.as_ref() {
-        let scan = scan_config(None, package)?;
-        if root.join(&scan.source_dir).is_dir() {
-            if let Ok(layout) = Layout::discover(&root, &scan) {
-                if matches!(layout.crate_kind, Crate::Library | Crate::Shared) {
-                    let built = cmd_build(
-                        BuildArgs {
-                            release: false,
-                            output: None,
-                            jobs: args.jobs,
-                            manifest_path: Some(root.clone()),
-                            features: args.features.clone(),
-                            no_default_features: args.no_default_features,
-                            trace: false,
-                            target: args.target.clone(),
-                            from: None,
-                            ignore_warnings: false,
-                        },
-                        verbose,
-                        quiet,
-                        false,
-                    )?;
-                    link_archives.push(built.artifact);
-                }
-            }
-        }
-    }
+    let build_args = BuildArgs {
+        release: false,
+        output: None,
+        jobs: args.jobs,
+        manifest_path: Some(root.clone()),
+        features: args.features.clone(),
+        no_default_features: args.no_default_features,
+        trace: false,
+        target: args.target.clone(),
+        from: None,
+        ignore_warnings: false,
+    };
+    let link_archives = package_archives_for_runner(&root, &manifest, &build_args, verbose, quiet)?;
 
     if !quiet {
         println!(
@@ -275,6 +259,7 @@ fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestO
             active_features: &active_features,
             target: target.as_deref(),
             link_archives: &link_archives,
+            release: false,
             verbose,
             quiet,
             jobs: resolve_jobs(args.jobs),
@@ -302,6 +287,145 @@ fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestO
     Ok(TestOutcome {
         passed,
         failed,
+        binary,
+    })
+}
+
+fn package_archives_for_runner(
+    root: &Path,
+    manifest: &Manifest,
+    build_args: &BuildArgs,
+    verbose: bool,
+    quiet: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut archives = Vec::new();
+    let Some(package) = manifest.package.as_ref() else {
+        return Ok(archives);
+    };
+    let scan = scan_config(None, package)?;
+    if !root.join(&scan.source_dir).is_dir() {
+        return Ok(archives);
+    }
+
+    if let Ok(layout) = Layout::discover(root, &scan) {
+        if matches!(layout.crate_kind, Crate::Library | Crate::Shared) {
+            let built = cmd_build(build_args.clone(), verbose, quiet, false)?;
+            archives.push(built.artifact);
+        }
+    }
+    Ok(archives)
+}
+
+struct BenchOutcome {
+    results: Vec<bench::BenchmarkResult>,
+    binary: PathBuf,
+}
+
+fn cmd_bench(args: BenchArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let started = Instant::now();
+    let result = run_bench_command(args, verbose, if json { true } else { quiet });
+    if json {
+        let duration_ms = started.elapsed().as_millis() as i64;
+        let payload = match &result {
+            Ok(outcome) => Json::Object(vec![
+                ("status".to_string(), Json::str("success")),
+                ("duration_ms".to_string(), Json::Number(duration_ms)),
+                (
+                    "binary".to_string(),
+                    Json::str(outcome.binary.display().to_string()),
+                ),
+                (
+                    "benchmarks".to_string(),
+                    Json::Array(
+                        outcome
+                            .results
+                            .iter()
+                            .map(|row| {
+                                Json::Object(vec![
+                                    ("name".to_string(), Json::str(row.name.clone())),
+                                    ("real_time_ns".to_string(), Json::Number(row.real_time_ns)),
+                                    ("cpu_time_ns".to_string(), Json::Number(row.cpu_time_ns)),
+                                    ("iterations".to_string(), Json::Number(row.iterations)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                ("errors".to_string(), Json::Array(Vec::new())),
+            ]),
+            Err(err) => Json::Object(vec![
+                ("status".to_string(), Json::str("failure")),
+                ("duration_ms".to_string(), Json::Number(duration_ms)),
+                (
+                    "errors".to_string(),
+                    Json::Array(vec![Json::Object(vec![
+                        ("severity".to_string(), Json::str("error")),
+                        ("message".to_string(), Json::str(err.to_string())),
+                    ])]),
+                ),
+            ]),
+        };
+        println!("{}", payload.render());
+    }
+    result.map(|_| ())
+}
+
+fn run_bench_command(args: BenchArgs, verbose: bool, quiet: bool) -> Result<BenchOutcome> {
+    let root = project_root(args.manifest_path.as_deref())?;
+    let manifest = Manifest::load(&root)?;
+    let active_features = manifest.resolve_features(&args.features, args.no_default_features);
+    let target = effective_target(args.target.as_deref(), &manifest);
+    let sources = bench::collect_benchmark_sources(&root)?;
+    let build_args = BuildArgs {
+        release: args.release,
+        output: None,
+        jobs: args.jobs,
+        manifest_path: Some(root.clone()),
+        features: args.features.clone(),
+        no_default_features: args.no_default_features,
+        trace: false,
+        target: args.target.clone(),
+        from: None,
+        ignore_warnings: false,
+    };
+    let link_archives = package_archives_for_runner(&root, &manifest, &build_args, verbose, quiet)?;
+
+    if !quiet {
+        println!(
+            "\x1b[1;95m    Bench\x1b[0m discovered {} source{}",
+            sources.len(),
+            if sources.len() == 1 { "" } else { "s" }
+        );
+    }
+
+    let binary = bench::build_benchmarks(
+        &root,
+        &manifest,
+        &sources,
+        test::TestBuildOptions {
+            active_features: &active_features,
+            target: target.as_deref(),
+            link_archives: &link_archives,
+            release: args.release,
+            verbose,
+            quiet,
+            jobs: resolve_jobs(args.jobs),
+        },
+    )?;
+    let run = bench::run_benchmarks(&binary, args.filter.as_deref())?;
+
+    if !quiet && !run.output.trim().is_empty() {
+        print!("{}", run.output);
+    }
+    if !quiet {
+        println!(
+            "\x1b[1;32m    Finished\x1b[0m benchmark suite: {} row{}",
+            run.results.len(),
+            if run.results.len() == 1 { "" } else { "s" }
+        );
+    }
+    Ok(BenchOutcome {
+        results: run.results,
         binary,
     })
 }

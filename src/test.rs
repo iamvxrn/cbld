@@ -102,6 +102,7 @@ pub struct TestBuildOptions<'a> {
     pub active_features: &'a [String],
     pub target: Option<&'a str>,
     pub link_archives: &'a [PathBuf],
+    pub release: bool,
     pub verbose: bool,
     pub quiet: bool,
     pub jobs: usize,
@@ -113,6 +114,19 @@ pub fn build_tests(
     test_sources: &[PathBuf],
     options: TestBuildOptions<'_>,
 ) -> Result<PathBuf> {
+    build_runner_binary(root, manifest, test_sources, options, "cbld-test")
+}
+
+/// Build an executable from runner sources using the package's compiler setup.
+/// The benchmark runner shares this path so test and benchmark builds stay
+/// consistent with the package profiles and include paths.
+pub(crate) fn build_runner_binary(
+    root: &Path,
+    manifest: &Manifest,
+    test_sources: &[PathBuf],
+    options: TestBuildOptions<'_>,
+    binary_name: &str,
+) -> Result<PathBuf> {
     let package = manifest
         .package
         .as_ref()
@@ -122,13 +136,14 @@ pub fn build_tests(
             "no test sources were discovered".into(),
         ));
     }
-    let target_dir = root.join("target").join("debug");
+    let target_dir = root
+        .join("target")
+        .join(if options.release { "release" } else { "debug" });
     std::fs::create_dir_all(&target_dir).path_ctx(&target_dir)?;
-    let bin_name = "cbld-test";
     let bin_path = target_dir.join(if cfg!(target_os = "windows") {
-        format!("{bin_name}.exe")
+        format!("{binary_name}.exe")
     } else {
-        bin_name.to_string()
+        binary_name.to_string()
     });
 
     // Use the same compiler setup as normal builds but force executable
@@ -145,7 +160,7 @@ pub fn build_tests(
         root,
         include_dirs,
         options.active_features,
-        false,
+        options.release,
         false,
         options.target.map(str::to_owned),
         package.defines.clone(),
@@ -153,11 +168,11 @@ pub fn build_tests(
     );
     compiler.validate()?;
 
-    // Build a synthetic executable layout for test sources
-    // We bypass Layout and directly compile units
+    // Build a synthetic executable layout for runner sources. We bypass Layout
+    // because test and benchmark trees are intentionally outside src/.
     let engine = Engine::new(options.jobs, options.verbose, options.quiet, false, false);
     let mut units = Vec::new();
-    let obj_dir = target_dir.join("obj").join("cbld-test");
+    let obj_dir = target_dir.join("obj").join(binary_name);
     std::fs::create_dir_all(&obj_dir).path_ctx(&obj_dir)?;
     for src in test_sources {
         let relative = src.strip_prefix(root).unwrap_or(src);

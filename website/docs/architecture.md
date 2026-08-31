@@ -28,13 +28,18 @@ cbld home is `$CBLD_HOME`, else `$HOME/.cbld`, else `%USERPROFILE%\.cbld` on Win
 
 ## JSON
 
-`cbld build --json`, `cbld test --json`, and `cbld doctor --json` use a small in-tree JSON writer (`src/json.rs`). There is no `serde_json` dependency. Other commands accept `--json` but ignore it.
+`cbld build --json`, `cbld test --json`, `cbld bench --json`, and `cbld doctor --json` use a small in-tree JSON writer (`src/json.rs`). There is no `serde_json` dependency. Other commands accept `--json` but ignore it.
 
 `cbld test` discovers C/C++ test sources, compiles them in parallel, links a
 test executable, and runs it. A library package is built first and its artifact
 is linked into the test executable. Test output is passed through unchanged;
 the runner recognizes common GoogleTest, Catch2, and doctest summary lines and
 falls back to the process exit status for plain test programs.
+
+`cbld bench` uses the same compiler and package-library linking path, then
+passes `--benchmark_format=console` to the benchmark executable. Parsed
+Google Benchmark-compatible rows expose real and CPU time in nanoseconds for
+machine consumers.
 
 ## Archivers
 

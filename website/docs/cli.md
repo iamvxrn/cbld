@@ -71,6 +71,24 @@ Flags: `FILTER`, `-j` / `--jobs`, `--manifest-path`, `--features`,
 binary as `--gtest_filter=<FILTER>`; other frameworks may ignore it. JSON
 success output includes `passed`, `failed`, and `binary` fields.
 
+## `bench`
+
+Discover and run Google Benchmark-compatible C/C++ benchmarks. Sources are
+collected from `benches/`, `benchmarks/`, `bench/`, `src/benchmarks/`,
+`src/bench_*`, and `src/*_bench.*`.
+
+```bash
+cbld bench --release
+cbld bench BM_sort
+cbld bench --json
+```
+
+Flags: `FILTER`, `--release`, `-j` / `--jobs`, `--manifest-path`, `--features`,
+`--no-default-features`, and `--target`. The filter is passed as
+`--benchmark_filter=<FILTER>`. Human output is preserved from the benchmark
+binary; JSON output contains parsed rows with `real_time_ns`, `cpu_time_ns`,
+and `iterations`.
+
 ## `lint`
 
 clang-tidy over the same files. Same idea as `cargo clippy`. `cbld check` is still Clang's static analyzer (`--analyze`); this command is extra lints.

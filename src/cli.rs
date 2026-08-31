@@ -90,6 +90,9 @@ pub enum Command {
     /// Compile and run tests (like `cargo test`).
     Test(TestArgs),
 
+    /// Compile and run benchmarks (like `cargo bench`).
+    Bench(BenchArgs),
+
     /// Generate shell completion scripts for the specified shell.
     Completions(CompletionsArgs),
 }
@@ -251,6 +254,38 @@ pub struct TestArgs {
     pub target: Option<String>,
 
     /// Filter test names (passed to the test binary as --gtest_filter or as plain arg).
+    #[arg(value_name = "FILTER")]
+    pub filter: Option<String>,
+}
+
+/// Arguments for `cbld bench`.
+#[derive(clap::Args, Debug)]
+pub struct BenchArgs {
+    /// Path to the project root (defaults to the current directory).
+    #[arg(long, value_name = "DIR")]
+    pub manifest_path: Option<PathBuf>,
+
+    /// Number of parallel compile jobs. Defaults to the number of CPUs.
+    #[arg(short = 'j', long = "jobs", value_name = "N")]
+    pub jobs: Option<usize>,
+
+    /// Build benchmarks with optimizations.
+    #[arg(long)]
+    pub release: bool,
+
+    /// Comma-separated list of features to activate.
+    #[arg(long, value_name = "FEATURES", value_delimiter = ',')]
+    pub features: Vec<String>,
+
+    /// Do not activate the `default` feature set.
+    #[arg(long)]
+    pub no_default_features: bool,
+
+    /// Analyze and link as if targeting this triple.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+
+    /// Google Benchmark filter expression.
     #[arg(value_name = "FILTER")]
     pub filter: Option<String>,
 }
@@ -542,6 +577,30 @@ mod tests {
                 assert_eq!(args.features, vec!["fast", "simd"]);
             }
             other => panic!("expected Command::Test, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bench_parses_filter_release_and_build_flags() {
+        let cli = Cli::try_parse_from([
+            "cbld",
+            "bench",
+            "BM_sort",
+            "--release",
+            "--jobs",
+            "3",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Bench(args) => {
+                assert_eq!(args.filter.as_deref(), Some("BM_sort"));
+                assert!(args.release);
+                assert_eq!(args.jobs, Some(3));
+                assert_eq!(args.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+            }
+            other => panic!("expected Command::Bench, got {other:?}"),
         }
     }
 
