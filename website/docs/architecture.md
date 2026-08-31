@@ -8,6 +8,12 @@ cbld is a single Rust binary. It shells out to tools the OS already has (`clang`
 
 A package is a directory with `cbld.toml` and a source tree (default `src/`). Public headers may live in `include/`. Workspaces list members under `[workspace] members`; each member is built as its own package.
 
+Standard C++20 module interfaces use `.cppm`, `.ccm`, `.cxxm`, `.c++m`,
+`.ixx`, or `.mxx`. The package-local module planner builds BMI files in
+`target/.../obj/<package>/.../modules`, topologically orders importers, and
+passes `-fmodule-file` to consumers. Module packages bypass the global static
+library cache until BMI artifacts can be cached safely.
+
 ## Dependencies
 
 `gh:owner/repo` maps to `https://github.com/owner/repo.git`. Overlay recipes (shipped in the binary, overridable via `~/.cbld/cbld-libs` from `cbld sync`) tell cbld how to treat an upstream tree that has no `cbld.toml`: `kind`, `source_dir`, `include`/`exclude`, `include_dirs`. The clone is never rewritten. If the clone has a `cbld.toml`, that file wins. The official list is on [Packages](/packages).
@@ -15,6 +21,11 @@ A package is a directory with `cbld.toml` and a source tree (default `src/`). Pu
 `kind = "header"` exposes include paths only — no archive. Compiled `lib` dependencies are archived and linked into the consumer executable.
 
 Resolution walks each dependency's effective manifest (clone or overlay) and compiles transitives first. Versions are git tags; `cbld.lock` pins commit SHAs.
+
+`[target.<triple>]` presets provide an existing package-relative `sysroot`.
+The selected `--target` or `[package] target` is propagated to dependency
+compilation and linking. Cross-target outputs are isolated under
+`target/<triple>/` and are never executed by `run`, `test`, or `bench`.
 
 `cbld vendor` copies the locked graph into `third_party/` for offline builds. Overlay recipes still apply to vendored copies (looked up by git URL).
 

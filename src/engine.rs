@@ -19,6 +19,7 @@ use crate::compiler::{driver_command, CompileUnit, Compiler, Language, LinkComma
 use crate::error::{CbldError, CompileDiagnostic, IoPathExt, Result};
 use crate::hash;
 use crate::manifest::{Manifest, Package};
+use crate::modules::{self, ModuleGraph};
 use crate::resolver;
 use crate::trace;
 
@@ -48,6 +49,30 @@ impl Crate {
             ))),
         }
     }
+}
+
+/// Return the target output root. Native builds preserve the historical
+/// `target/debug` and `target/release` paths; cross-target builds are isolated
+/// under `target/<triple>` so host and target objects cannot be mixed.
+pub fn target_dir(root: &Path, target: Option<&str>) -> PathBuf {
+    let base = root.join("target");
+    match target {
+        Some(triple) if !triple.is_empty() => base.join(sanitize_target(triple)),
+        _ => base,
+    }
+}
+
+fn sanitize_target(triple: &str) -> String {
+    triple
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// How to locate and scan a package's sources. Bundles the legacy-support
@@ -283,7 +308,9 @@ impl Layout {
 /// the real name back preserves its case (both OSes are case-*preserving*), so
 /// `.C` stays C++ everywhere.
 fn find_canonical_entry(src: &Path) -> Option<(PathBuf, Crate, Language)> {
-    const ENTRY_EXTS: [&str; 7] = ["cpp", "c", "cc", "cxx", "C", "c++", "cp"];
+    const ENTRY_EXTS: [&str; 13] = [
+        "cpp", "c", "cc", "cxx", "C", "c++", "cp", "cppm", "ccm", "cxxm", "c++m", "ixx", "mxx",
+    ];
     let names: Vec<(String, PathBuf)> = fs::read_dir(src)
         .ok()?
         .filter_map(|e| e.ok())
@@ -513,6 +540,7 @@ impl Engine {
             }
             units.push(unit);
         }
+        let module_graph = modules::prepare(&mut units)?;
         let compile_commands: Vec<CompileCommandEntry> = units
             .iter()
             .map(|u| CompileCommandEntry {
@@ -535,7 +563,7 @@ impl Engine {
         // Before spinning up the compile thread-pool, see whether a
         // byte-identical build (same sources, same flags, same target) has
         // already been cached globally under ~/.cbld/cache/prebuilt/{hash}.
-        let cache_key = if layout.crate_kind == Crate::Library {
+        let cache_key = if layout.crate_kind == Crate::Library && !module_graph.has_modules {
             let fingerprint = compiler.cache_fingerprint(layout.entry_language)?;
             let mut cache_files = sources.clone();
             cache_files.extend(scan_headers(&layout.src, &layout.include, &layout.exclude)?);
@@ -585,19 +613,24 @@ impl Engine {
         let mut to_compile: Vec<CompileUnit> = Vec::new();
         let mut all_objects: Vec<PathBuf> = Vec::with_capacity(units.len());
         let mut skipped = 0usize;
-        for mut unit in units {
-            let depfile = unit.object.with_extension("d");
-            all_objects.push(unit.object.clone());
-            if object_is_fresh(&unit.source, &unit.object, &depfile) {
-                skipped += 1;
-                continue;
+        if module_graph.has_modules {
+            all_objects.extend(units.iter().map(|unit| unit.object.clone()));
+            to_compile = units;
+        } else {
+            for mut unit in units {
+                let depfile = unit.object.with_extension("d");
+                all_objects.push(unit.object.clone());
+                if object_is_fresh(&unit.source, &unit.object, &depfile) {
+                    skipped += 1;
+                    continue;
+                }
+                // Generate depfile for next incremental check.
+                unit.args.push("-MMD".to_string());
+                unit.args.push("-MP".to_string());
+                unit.args.push("-MF".to_string());
+                unit.args.push(depfile.to_string_lossy().to_string());
+                to_compile.push(unit);
             }
-            // Generate depfile for next incremental check.
-            unit.args.push("-MMD".to_string());
-            unit.args.push("-MP".to_string());
-            unit.args.push("-MF".to_string());
-            unit.args.push(depfile.to_string_lossy().to_string());
-            to_compile.push(unit);
         }
 
         if !self.quiet {
@@ -633,6 +666,8 @@ impl Engine {
         let started = Instant::now();
         let objects = if to_compile.is_empty() {
             all_objects
+        } else if module_graph.has_modules {
+            self.compile_in_waves(to_compile, &module_graph)?
         } else {
             let compiled = self.compile_all(to_compile)?;
             // compile_all returns objects for compiled units; merge with all_objects
@@ -809,7 +844,7 @@ impl Engine {
 
     /// Public wrapper for `cbld test` — compile a set of units for the test binary.
     pub fn compile_for_test(&self, units: Vec<CompileUnit>) -> Result<Vec<PathBuf>> {
-        self.compile_all(units)
+        self.compile_units(units)
     }
 
     /// Public wrapper for `cbld test` — link the test binary.
@@ -879,6 +914,32 @@ impl Engine {
                 failures,
                 diagnostics: failed_diagnostics,
             });
+        }
+        Ok(objects)
+    }
+
+    fn compile_units(&self, mut units: Vec<CompileUnit>) -> Result<Vec<PathBuf>> {
+        let graph = modules::prepare(&mut units)?;
+        if graph.has_modules {
+            self.compile_in_waves(units, &graph)
+        } else {
+            self.compile_all(units)
+        }
+    }
+
+    fn compile_in_waves(
+        &self,
+        units: Vec<CompileUnit>,
+        graph: &ModuleGraph,
+    ) -> Result<Vec<PathBuf>> {
+        let objects: Vec<PathBuf> = units.iter().map(|unit| unit.object.clone()).collect();
+        let mut pending: Vec<Option<CompileUnit>> = units.into_iter().map(Some).collect();
+        for wave in &graph.waves {
+            let batch = wave
+                .iter()
+                .map(|&index| pending[index].take().expect("module wave index is unique"))
+                .collect();
+            self.compile_all(batch)?;
         }
         Ok(objects)
     }
@@ -1864,6 +1925,20 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains("custom"));
+    }
+
+    #[test]
+    fn cross_target_output_root_is_isolated() {
+        let root = Path::new("/tmp/project");
+        assert_eq!(target_dir(root, None), root.join("target"));
+        assert_eq!(
+            target_dir(root, Some("aarch64-unknown-linux-gnu")),
+            root.join("target/aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            target_dir(root, Some("x86_64@custom")),
+            root.join("target/x86_64_custom")
+        );
     }
 
     #[test]

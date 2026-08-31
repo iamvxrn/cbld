@@ -101,6 +101,7 @@ fn scan_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 pub struct TestBuildOptions<'a> {
     pub active_features: &'a [String],
     pub target: Option<&'a str>,
+    pub sysroot: Option<&'a Path>,
     pub link_archives: &'a [PathBuf],
     pub release: bool,
     pub verbose: bool,
@@ -136,9 +137,11 @@ pub(crate) fn build_runner_binary(
             "no test sources were discovered".into(),
         ));
     }
-    let target_dir = root
-        .join("target")
-        .join(if options.release { "release" } else { "debug" });
+    let target_dir = crate::engine::target_dir(root, options.target).join(if options.release {
+        "release"
+    } else {
+        "debug"
+    });
     std::fs::create_dir_all(&target_dir).path_ctx(&target_dir)?;
     let bin_path = target_dir.join(if cfg!(target_os = "windows") {
         format!("{binary_name}.exe")
@@ -154,7 +157,7 @@ pub(crate) fn build_runner_binary(
         .iter()
         .map(|dir| root.join(dir))
         .collect();
-    let compiler = Compiler::new(
+    let compiler = Compiler::new_with_sysroot(
         c_profile,
         cpp_profile,
         root,
@@ -163,6 +166,7 @@ pub(crate) fn build_runner_binary(
         options.release,
         false,
         options.target.map(str::to_owned),
+        options.sysroot.map(Path::to_path_buf),
         package.defines.clone(),
         package.ignore_warnings,
     );

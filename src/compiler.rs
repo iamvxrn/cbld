@@ -58,9 +58,21 @@ impl Language {
         let ext = raw.to_ascii_lowercase();
         match ext.as_str() {
             "c" => Some(Language::C),
-            "cc" | "cpp" | "cxx" | "c++" | "cp" => Some(Language::Cpp),
+            "cc" | "cpp" | "cxx" | "c++" | "cp" | "cppm" | "ccm" | "cxxm" | "c++m" | "ixx"
+            | "mxx" => Some(Language::Cpp),
             _ => None,
         }
+    }
+
+    /// True for standard C++ module interface/implementation extensions.
+    pub fn is_module_source(path: &Path) -> bool {
+        let Some(raw) = path.extension().and_then(|extension| extension.to_str()) else {
+            return false;
+        };
+        matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "cppm" | "ccm" | "cxxm" | "c++m" | "ixx" | "mxx"
+        )
     }
 
     /// True for C/C++ header extensions. Headers are never translation units
@@ -275,6 +287,8 @@ pub struct Compiler {
     /// `--target=<triple>` into every compile *and* the final link step, so
     /// object files and the linked artifact always agree on target.
     target: Option<String>,
+    /// Target sysroot selected by the matching manifest preset.
+    sysroot: Option<PathBuf>,
 }
 
 impl Compiler {
@@ -283,6 +297,7 @@ impl Compiler {
     /// unconditionally added to the header search path, independent of
     /// `include_dirs` (which carries *other* packages' public headers, e.g.
     /// dependencies).
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         c_profile: CProfile,
@@ -293,6 +308,36 @@ impl Compiler {
         release: bool,
         trace: bool,
         target: Option<String>,
+        package_defines: Vec<String>,
+        ignore_warnings: bool,
+    ) -> Compiler {
+        Self::new_with_sysroot(
+            c_profile,
+            cpp_profile,
+            package_root,
+            include_dirs,
+            active_features,
+            release,
+            trace,
+            target,
+            None,
+            package_defines,
+            ignore_warnings,
+        )
+    }
+
+    /// Construct compiler settings with an optional cross-compilation sysroot.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_sysroot(
+        c_profile: CProfile,
+        cpp_profile: CppProfile,
+        package_root: &Path,
+        include_dirs: Vec<PathBuf>,
+        active_features: &[String],
+        release: bool,
+        trace: bool,
+        target: Option<String>,
+        sysroot: Option<PathBuf>,
         package_defines: Vec<String>,
         ignore_warnings: bool,
     ) -> Compiler {
@@ -316,6 +361,7 @@ impl Compiler {
             release,
             trace,
             target,
+            sysroot,
         }
     }
 
@@ -648,6 +694,9 @@ impl Compiler {
         if let Some(target) = &self.target {
             args.push(format!("--target={target}"));
         }
+        if let Some(sysroot) = &self.sysroot {
+            args.push(format!("--sysroot={}", sysroot.display()));
+        }
 
         args.push(format!("-I{}", self.own_include_dir.display()));
         for dir in &self.include_dirs {
@@ -715,6 +764,9 @@ impl Compiler {
             if let Some(target) = &self.target {
                 args.push(format!("--target={target}"));
             }
+            if let Some(sysroot) = &self.sysroot {
+                args.push(format!("--sysroot={}", sysroot.display()));
+            }
             args.push("-shared".to_string());
             args.push("-fPIC".to_string());
             if profile_lto {
@@ -772,6 +824,9 @@ impl Compiler {
         // will reject them as the wrong architecture/ABI.
         if let Some(target) = &self.target {
             args.push(format!("--target={target}"));
+        }
+        if let Some(sysroot) = &self.sysroot {
+            args.push(format!("--sysroot={}", sysroot.display()));
         }
         if profile_lto {
             args.push("-flto".to_string());
@@ -1037,7 +1092,9 @@ mod tests {
             Language::from_extension(Path::new("foo.c")),
             Some(Language::C)
         );
-        for ext in ["cc", "cpp", "cxx", "c++", "cp"] {
+        for ext in [
+            "cc", "cpp", "cxx", "c++", "cp", "cppm", "ccm", "cxxm", "c++m", "ixx", "mxx",
+        ] {
             assert_eq!(
                 Language::from_extension(Path::new(&format!("foo.{ext}"))),
                 Some(Language::Cpp)
@@ -1047,6 +1104,44 @@ mod tests {
         assert!(Language::is_header(Path::new("foo.h")));
         assert!(Language::is_header(Path::new("foo.hpp")));
         assert!(!Language::is_header(Path::new("foo.c")));
+    }
+
+    #[test]
+    fn sysroot_reaches_compile_and_link_commands() {
+        let c = Compiler::new_with_sysroot(
+            CProfile::default(),
+            CppProfile::default(),
+            Path::new("."),
+            Vec::new(),
+            &[],
+            false,
+            false,
+            Some("aarch64-unknown-linux-gnu".into()),
+            Some(PathBuf::from("/opt/aarch64-sysroot")),
+            Vec::new(),
+            false,
+        );
+        let unit = c
+            .compile_unit(Path::new("main.cpp"), Path::new("main.o"))
+            .unwrap();
+        assert!(unit
+            .args
+            .contains(&"--target=aarch64-unknown-linux-gnu".to_string()));
+        assert!(unit
+            .args
+            .contains(&"--sysroot=/opt/aarch64-sysroot".to_string()));
+
+        let links = c.link_command(
+            &[PathBuf::from("main.o")],
+            Path::new("app"),
+            true,
+            false,
+            false,
+            &[],
+        );
+        assert!(links[0]
+            .args
+            .contains(&"--sysroot=/opt/aarch64-sysroot".to_string()));
     }
 
     /// A capital `.C` is C++ (Unix tradition), and must not collapse into the

@@ -18,6 +18,7 @@ mod json;
 mod lint;
 mod manifest;
 mod migrate;
+mod modules;
 mod recipe;
 mod resolver;
 mod test;
@@ -96,6 +97,12 @@ struct BuildOutcome {
     /// this invocation (root package plus every dependency), written to the
     /// project root by `cmd_build` after a successful build.
     compile_commands: Vec<compdb::CompileCommandEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TargetConfig {
+    triple: Option<String>,
+    sysroot: Option<PathBuf>,
 }
 
 /// Include dirs, archives, cache hits, and compile-commands entries from
@@ -227,7 +234,13 @@ fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestO
     let root = project_root(args.manifest_path.as_deref())?;
     let manifest = Manifest::load(&root)?;
     let active_features = manifest.resolve_features(&args.features, args.no_default_features);
-    let target = effective_target(args.target.as_deref(), &manifest);
+    let target = effective_target(args.target.as_deref(), &manifest, &root)?;
+    if target.triple.is_some() {
+        return Err(CbldError::Config(
+            "cbld test cannot execute a cross-compiled binary; build it without `--target` to run"
+                .into(),
+        ));
+    }
     let sources = test::collect_test_sources(&root)?;
     let build_args = BuildArgs {
         release: false,
@@ -257,7 +270,8 @@ fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestO
         &sources,
         test::TestBuildOptions {
             active_features: &active_features,
-            target: target.as_deref(),
+            target: target.triple.as_deref(),
+            sysroot: target.sysroot.as_deref(),
             link_archives: &link_archives,
             release: false,
             verbose,
@@ -374,7 +388,13 @@ fn run_bench_command(args: BenchArgs, verbose: bool, quiet: bool) -> Result<Benc
     let root = project_root(args.manifest_path.as_deref())?;
     let manifest = Manifest::load(&root)?;
     let active_features = manifest.resolve_features(&args.features, args.no_default_features);
-    let target = effective_target(args.target.as_deref(), &manifest);
+    let target = effective_target(args.target.as_deref(), &manifest, &root)?;
+    if target.triple.is_some() {
+        return Err(CbldError::Config(
+            "cbld bench cannot execute a cross-compiled binary; build it without `--target` to run"
+                .into(),
+        ));
+    }
     let sources = bench::collect_benchmark_sources(&root)?;
     let build_args = BuildArgs {
         release: args.release,
@@ -404,7 +424,8 @@ fn run_bench_command(args: BenchArgs, verbose: bool, quiet: bool) -> Result<Benc
         &sources,
         test::TestBuildOptions {
             active_features: &active_features,
-            target: target.as_deref(),
+            target: target.triple.as_deref(),
+            sysroot: target.sysroot.as_deref(),
             link_archives: &link_archives,
             release: args.release,
             verbose,
@@ -590,16 +611,30 @@ fn build_single(
     // wins here also governs every dependency compiled below, since a
     // dependency built for the host while the root package targets some
     // other triple would fail to link (mismatched architecture/ABI).
-    let target = effective_target(args.target.as_deref(), manifest);
+    let target = effective_target(args.target.as_deref(), manifest, root)?;
     if verbose {
-        if let Some(t) = &target {
+        if let Some(t) = &target.triple {
             eprintln!("  \x1b[2m[cbld]\x1b[0m cross-compiling for target: {t}");
+        }
+        if let Some(sysroot) = &target.sysroot {
+            eprintln!(
+                "  \x1b[2m[cbld]\x1b[0m using target sysroot: {}",
+                sysroot.display()
+            );
         }
     }
 
     // Build dependencies first so their archives/headers exist.
-    let target_dir = root.join("target");
-    let deps = build_dependencies(&resolved, args, verbose, quiet, json, target.as_deref())?;
+    let target_dir = engine::target_dir(root, target.triple.as_deref());
+    let deps = build_dependencies(
+        &resolved,
+        args,
+        verbose,
+        quiet,
+        json,
+        target.triple.as_deref(),
+        target.sysroot.as_deref(),
+    )?;
 
     // --- Compile the root package ----------------------------------------
     let features = manifest.resolve_features(&args.features, args.no_default_features);
@@ -624,7 +659,7 @@ fn build_single(
     c_profile.extra_flags.extend(pkg_cflags.clone());
     cpp_profile.extra_flags.extend(pkg_cflags);
 
-    let compiler = Compiler::new(
+    let compiler = Compiler::new_with_sysroot(
         c_profile,
         cpp_profile,
         root,
@@ -632,7 +667,8 @@ fn build_single(
         &features,
         args.release,
         args.trace,
-        target,
+        target.triple,
+        target.sysroot,
         package.defines.clone(),
         args.ignore_warnings || package.ignore_warnings,
     );
@@ -797,6 +833,7 @@ fn build_dependencies(
     quiet: bool,
     json: bool,
     cross_target: Option<&str>,
+    sysroot: Option<&Path>,
 ) -> Result<DepArtifacts> {
     let mut includes = Vec::new();
     let mut archives = Vec::new();
@@ -852,7 +889,7 @@ fn build_dependencies(
         let mut dep_cpp = dep_manifest.profile.cpp.clone().unwrap_or_default();
         dep_c.extra_flags.extend(dep_pkg_cflags.clone());
         dep_cpp.extra_flags.extend(dep_pkg_cflags);
-        let dep_compiler = Compiler::new(
+        let dep_compiler = Compiler::new_with_sysroot(
             dep_c,
             dep_cpp,
             &dep.cache_path,
@@ -861,11 +898,12 @@ fn build_dependencies(
             args.release,
             false,
             cross_target.map(|t| t.to_string()),
+            sysroot.map(Path::to_path_buf),
             dep_package.defines.clone(),
             dep_package.ignore_warnings,
         );
 
-        let dep_target = dep.cache_path.join("target");
+        let dep_target = engine::target_dir(&dep.cache_path, cross_target);
         let engine = Engine::new(jobs(args), verbose, quiet, json, false);
 
         // Force library output for dependencies even if they expose main.*.
@@ -906,6 +944,16 @@ fn build_dependencies(
 fn cmd_run(args: RunArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
     let quiet_eff = quiet || json;
     let res: Result<()> = (|| {
+        let root = project_root(args.build.manifest_path.as_deref())?;
+        let manifest = Manifest::load(&root)?;
+        if effective_target(args.build.target.as_deref(), &manifest, &root)?
+            .triple
+            .is_some()
+        {
+            return Err(CbldError::Config(
+                "cbld run cannot execute a cross-compiled binary; use `cbld build` instead".into(),
+            ));
+        }
         let outcome = build_with_diagnostics(args.build, verbose, quiet_eff, json)?;
         if outcome.crate_kind != Crate::Executable {
             return Err(CbldError::LayoutViolation(
@@ -1139,7 +1187,7 @@ fn analysis_compiler(
     }
 
     let features = manifest.resolve_features(features, no_default_features);
-    let target = effective_target(target, manifest);
+    let target = effective_target(target, manifest, root)?;
     let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
     let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
     let root_cflags = pkg_config_cflags(&package.pkg_config, verbose)?;
@@ -1147,7 +1195,7 @@ fn analysis_compiler(
     c_profile.extra_flags.extend(dep_pkg_cflags.clone());
     cpp_profile.extra_flags.extend(root_cflags);
     cpp_profile.extra_flags.extend(dep_pkg_cflags);
-    let compiler = Compiler::new(
+    let compiler = Compiler::new_with_sysroot(
         c_profile,
         cpp_profile,
         root,
@@ -1155,7 +1203,8 @@ fn analysis_compiler(
         &features,
         false,
         false,
-        target,
+        target.triple,
+        target.sysroot,
         package.defines.clone(),
         package.ignore_warnings,
     );
@@ -1552,14 +1601,49 @@ fn resolve_jobs(explicit: Option<usize>) -> usize {
     explicit.unwrap_or_else(default_jobs).max(1)
 }
 
-/// Resolve the cross-compilation target triple for a build: an explicit
-/// `--target` on the CLI always wins; otherwise fall back to the package's
-/// own `[package] target` manifest field (if any). `None` means "compile
-/// natively" — no `--target` flag reaches clang at all.
-fn effective_target(cli_target: Option<&str>, manifest: &Manifest) -> Option<String> {
-    cli_target
-        .map(|t| t.to_string())
-        .or_else(|| manifest.package.as_ref().and_then(|p| p.target.clone()))
+/// Resolve the cross-compilation target and its optional preset. An explicit
+/// `--target` wins over `[package] target`; the selected triple then chooses
+/// `[target.<triple>]`. No target means a native build with no target flags.
+fn effective_target(
+    cli_target: Option<&str>,
+    manifest: &Manifest,
+    root: &Path,
+) -> Result<TargetConfig> {
+    let triple = cli_target
+        .map(str::to_owned)
+        .or_else(|| manifest.package.as_ref().and_then(|p| p.target.clone()));
+    let Some(triple) = triple else {
+        return Ok(TargetConfig::default());
+    };
+
+    let sysroot = match manifest.target.get(&triple) {
+        Some(preset) if !preset.sysroot.trim().is_empty() => {
+            let configured = PathBuf::from(preset.sysroot.trim());
+            let path = if configured.is_absolute() {
+                configured
+            } else {
+                root.join(configured)
+            };
+            if !path.is_dir() {
+                return Err(CbldError::Config(format!(
+                    "target preset '{triple}' sysroot is not a directory: {}",
+                    path.display()
+                )));
+            }
+            Some(path.canonicalize().path_ctx(&path)?)
+        }
+        Some(_) => {
+            return Err(CbldError::Config(format!(
+                "target preset '{triple}' has an empty sysroot"
+            )));
+        }
+        None => None,
+    };
+
+    Ok(TargetConfig {
+        triple: Some(triple),
+        sysroot,
+    })
 }
 
 /// Resolve the sources directory to scan (legacy support). Precedence:
@@ -1909,5 +1993,34 @@ mod tests {
         let rendered = build_failure_payload(&err, 7).render();
         assert!(rendered.contains("\"status\":\"failure\""));
         assert!(rendered.contains("bad toolchain spec"));
+    }
+
+    #[test]
+    fn target_preset_resolves_relative_sysroot_and_cli_precedence() {
+        let root = temp_dir("target-preset");
+        std::fs::create_dir_all(root.join("sysroots/aarch64")).unwrap();
+        let manifest: Manifest = toml::from_str(
+            "[package]\n\
+             name = \"app\"\n\
+             version = \"0.1.0\"\n\
+             target = \"aarch64-unknown-linux-gnu\"\n\
+             [target.aarch64-unknown-linux-gnu]\n\
+             sysroot = \"sysroots/aarch64\"\n",
+        )
+        .unwrap();
+
+        let selected = effective_target(None, &manifest, &root).unwrap();
+        assert_eq!(
+            selected.triple.as_deref(),
+            Some("aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            selected.sysroot,
+            Some(root.join("sysroots/aarch64").canonicalize().unwrap())
+        );
+
+        let cli = effective_target(Some("x86_64-unknown-linux-gnu"), &manifest, &root).unwrap();
+        assert_eq!(cli.triple.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(cli.sysroot, None);
     }
 }

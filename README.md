@@ -11,7 +11,8 @@ A build system for C and C++ projects with a fixed `src/` layout and Clang integ
 
 ## Features
 
-- Builds C/C++ with Clang (compile driver can fall back to gcc, tcc, zig cc).
+- Builds C/C++ with Clang (compile driver can fall back to gcc, tcc, zig cc), including package-local C++20 modules.
+- Cross-compilation with `--target` and optional `[target.<triple>] sysroot` presets.
 - Strict package layout (`cbld.toml`, `src/`, optional `include/`).
 - Git dependencies with `cbld.lock` (including transitives); overlay recipes for a few upstream trees that have no `cbld.toml`; `compile_commands.json` on every build.
 - `build`, `run`, `test`, `bench`, `init`, `check`, `fmt`, `lint`, `update`, `sync`, `migrate`, `vendor`, `doctor`, `completions`.

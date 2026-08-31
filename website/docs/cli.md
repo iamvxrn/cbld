@@ -13,7 +13,7 @@ cbld build --from vendor/foo --ignore-warnings
 cbld build --json
 ```
 
-Flags: `--release`, `-o` / `--output`, `-j` / `--jobs`, `--manifest-path`, `--features`, `--no-default-features`, `--trace`, `--target`, `--from`, `--ignore-warnings`.
+Flags: `--release`, `-o` / `--output`, `-j` / `--jobs`, `--manifest-path`, `--features`, `--no-default-features`, `--trace`, `--target`, `--from`, `--ignore-warnings`. A matching `[target.<triple>]` preset may add `--sysroot` automatically.
 
 ## `run`
 
@@ -40,7 +40,7 @@ Run Clang's static analyzer without producing object files or linking.
 cbld check -j 4 --manifest-path .
 ```
 
-At a workspace root, `check` / `fmt` / `lint` run on every `[workspace] members` entry.
+At a workspace root, `check` / `fmt` / `lint` run on every `[workspace] members` entry. `--target` also selects the matching target preset and sysroot.
 
 ## `fmt`
 

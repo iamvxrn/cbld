@@ -35,6 +35,10 @@ pub struct Manifest {
     #[serde(default)]
     pub profile: Profiles,
 
+    /// Cross-compilation presets keyed by target triple.
+    #[serde(default)]
+    pub target: BTreeMap<String, TargetPreset>,
+
     /// Dependency table. Keys are `gh:user/lib` shorthands.
     #[serde(default)]
     pub dependencies: BTreeMap<String, Dependency>,
@@ -45,6 +49,13 @@ pub struct Manifest {
 pub struct Workspace {
     #[serde(default)]
     pub members: Vec<String>,
+}
+
+/// Configuration selected by `[package] target` or `cbld --target`.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct TargetPreset {
+    /// Sysroot passed to the compiler and linker for this target.
+    pub sysroot: String,
 }
 
 /// `[package]` table.
@@ -555,6 +566,28 @@ mod tests {
         assert_eq!(pkg.kind.as_deref(), Some("lib"));
         assert_eq!(pkg.include, vec!["*.c"]);
         assert_eq!(pkg.exclude, vec!["tests/**", "fuzzing/**"]);
+    }
+
+    #[test]
+    fn target_presets_parse_with_a_sysroot() {
+        let manifest: Manifest = toml::from_str(
+            "[package]\n\
+             name = \"app\"\n\
+             version = \"0.1.0\"\n\
+             target = \"aarch64-unknown-linux-gnu\"\n\
+             [target.aarch64-unknown-linux-gnu]\n\
+             sysroot = \"toolchains/aarch64\"\n",
+        )
+        .unwrap();
+        assert_eq!(manifest.target.len(), 1);
+        assert_eq!(
+            manifest
+                .target
+                .get("aarch64-unknown-linux-gnu")
+                .unwrap()
+                .sysroot,
+            "toolchains/aarch64"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-Parse clang diagnostics on Windows drive-letter paths. Include headers in the library cache key. Link with the same compiler driver used to compile (`zig cc` is invoked as `zig` + `cc`). Add `cbld test` discovery, compilation, execution, common test-summary parsing, and JSON output. Add `cbld bench` discovery, execution, Google Benchmark-compatible console parsing, and JSON output.
+Parse clang diagnostics on Windows drive-letter paths. Include headers in the library cache key. Link with the same compiler driver used to compile (`zig cc` is invoked as `zig` + `cc`). Add `cbld test` discovery, compilation, execution, common test-summary parsing, and JSON output. Add `cbld bench` discovery, execution, Google Benchmark-compatible console parsing, and JSON output. Add package-local C++20 modules and target presets with sysroot propagation and isolated cross-target output directories.
 
 `[package] libs` are passed to the linker as `-l`. `cbld migrate` writes those names instead of commenting them as `gh:<user>/pthread`.
 

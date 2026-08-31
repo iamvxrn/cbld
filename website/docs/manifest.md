@@ -21,6 +21,9 @@ exceptions = true
 [dependencies]
 "gh:owner/repo" = "1.2.3"
 "gh:owner/other" = { version = "2.0", features = ["ssl"], tag = "v2.0.1" }
+
+[target.aarch64-unknown-linux-gnu]
+sysroot = "toolchains/aarch64-sysroot"
 ```
 
 `cbld init` scaffolds a minimal manifest plus `src/main.cpp` (or `main.c`, library variants with `--lib` / `--c`). New packages start at `version = "0.1.0"`.
@@ -42,6 +45,32 @@ exceptions = true
 | `ignore_warnings` | Inject `-w` for all translation units |
 | `kind` | `bin` / `lib` when the entry file name does not imply the artifact type; `header` for include-only (no archive) |
 | `include` / `exclude` | Glob patterns to narrow the source scan |
+
+## Target presets
+
+`[target.<triple>]` supplies the sysroot for a selected target. The triple is
+selected by `--target` first, then by `[package] target`. Relative sysroots are
+resolved from the package root and must point to an existing directory.
+
+```toml
+[package]
+target = "aarch64-unknown-linux-gnu"
+
+[target.aarch64-unknown-linux-gnu]
+sysroot = "toolchains/aarch64-sysroot"
+```
+
+Cross-target artifacts are isolated under `target/<triple>/debug` or
+`target/<triple>/release`. `cbld run`, `cbld test`, and `cbld bench` refuse to
+execute a cross-compiled binary on the host.
+
+## C++20 modules
+
+Package-local standard C++20 modules use `.cppm`, `.ccm`, `.cxxm`, `.c++m`,
+`.ixx`, or `.mxx`. `cbld` discovers `export module`, `module`, and `import`
+declarations, compiles module interfaces to BMI files, and orders importers
+after their producers. Module dependencies from external packages are not
+resolved as BMI files yet.
 
 ## Profiles
 
