@@ -58,23 +58,23 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
 }
 
 fn print_report(checks: &[Check], verbose: bool) {
-    println!("\x1b[1;95m◈ cbld doctor\x1b[0m \x1b[1m— environment diagnostics\x1b[0m  \x1b[2m({} checks)\x1b[0m\n", checks.len());
+    println!("\x1b[1;95m* cbld doctor\x1b[0m \x1b[1m— environment diagnostics\x1b[0m  \x1b[2m({} checks)\x1b[0m\n", checks.len());
 
     let mut passed = 0usize;
     for c in checks {
         if c.ok {
             passed += 1;
             println!(
-                "  \x1b[1;92m✔ {:<14}\x1b[0m \x1b[97m{}\x1b[0m",
+                "  \x1b[1;92m[ ok ] {:<14}\x1b[0m \x1b[97m{}\x1b[0m",
                 c.name, c.detail
             );
         } else {
             println!(
-                "  \x1b[1;91m✘ {:<14}\x1b[0m \x1b[91m{}\x1b[0m",
+                "  \x1b[1;91m[fail] {:<14}\x1b[0m \x1b[91m{}\x1b[0m",
                 c.name, c.detail
             );
             if let Some(fix) = &c.fix {
-                println!("           \x1b[2;96m↳ fix:\x1b[0m \x1b[96m{fix}\x1b[0m");
+                println!("           \x1b[2;96m-> fix:\x1b[0m \x1b[96m{fix}\x1b[0m");
             }
         }
     }
@@ -83,12 +83,12 @@ fn print_report(checks: &[Check], verbose: bool) {
     println!();
     if failed == 0 {
         println!(
-            "\x1b[1;92m✔ All {} checks passed.\x1b[0m \x1b[1mYour environment is ready for \x1b[95m`cbld build`\x1b[0m\x1b[1m.\x1b[0m",
+            "\x1b[1;92m[ ok ] All {} checks passed.\x1b[0m \x1b[1mYour environment is ready for \x1b[95m`cbld build`\x1b[0m\x1b[1m.\x1b[0m",
             checks.len()
         );
     } else {
         println!(
-            "\x1b[1;93m● {passed} passed, \x1b[1;91m{failed} failed\x1b[0m\x1b[1;93m.\x1b[0m Fix the items above, then re-run \x1b[96m`cbld doctor`\x1b[0m."
+            "\x1b[1;93m[ .. ] {passed} passed, \x1b[1;91m{failed} failed\x1b[0m\x1b[1;93m.\x1b[0m Fix the items above, then re-run \x1b[96m`cbld doctor`\x1b[0m."
         );
     }
     if verbose {
