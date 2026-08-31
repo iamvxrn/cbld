@@ -274,6 +274,13 @@ fn lex(text: &str) -> Vec<String> {
                     }
                 }
             }
+            b'R' if bytes.get(index + 1) == Some(&b'"') => {
+                if let Some(end) = raw_string_end(bytes, index) {
+                    index = end;
+                } else {
+                    index += 1;
+                }
+            }
             byte if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b':' => {
                 let start = index;
                 index += 1;
@@ -305,6 +312,24 @@ fn lex(text: &str) -> Vec<String> {
         }
     }
     tokens
+}
+
+fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let delimiter_start = start + 2;
+    let open = (delimiter_start..bytes.len().min(delimiter_start + 17))
+        .find(|&index| bytes[index] == b'(')?;
+    let delimiter = &bytes[delimiter_start..open];
+    let mut index = open + 1;
+    while index < bytes.len() {
+        if bytes[index] == b')'
+            && bytes.get(index + 1..index + 1 + delimiter.len()) == Some(delimiter)
+            && bytes.get(index + 1 + delimiter.len()) == Some(&b'"')
+        {
+            return Some(index + delimiter.len() + 2);
+        }
+        index += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -362,13 +387,25 @@ mod tests {
     #[test]
     fn ignores_module_words_in_comments_and_strings() {
         let info = parse_source(
-            "// export module fake;\nconst char *s = \"import fake;\";\nexport module real;",
+            "// export module fake;\n/* export module also_fake; */\nconst char *s = \"import fake;\";\nexport module real;",
         );
         assert_eq!(
             info.declaration,
             Some((DeclarationKind::Interface, "real".into()))
         );
         assert!(info.imports.is_empty());
+    }
+
+    #[test]
+    fn ignores_module_words_in_raw_strings() {
+        let info = parse_source(
+            r##"const char *s = R"tag(export module fake; // still text)tag";
+                    export module real;"##,
+        );
+        assert_eq!(
+            info.declaration,
+            Some((DeclarationKind::Interface, "real".into()))
+        );
     }
 
     #[test]

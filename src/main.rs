@@ -24,6 +24,7 @@ mod resolver;
 mod test;
 mod trace;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -114,6 +115,47 @@ struct DepArtifacts {
     pkg_libs: Vec<String>,
     cache_hits: usize,
     compile_commands: Vec<compdb::CompileCommandEntry>,
+}
+
+#[derive(Default)]
+struct PkgConfigCache {
+    values: HashMap<(bool, Vec<String>), Vec<String>>,
+}
+
+impl PkgConfigCache {
+    fn cflags(&mut self, names: &[String], verbose: bool) -> Result<Vec<String>> {
+        self.query(false, names, verbose)
+    }
+
+    fn libs(&mut self, names: &[String], verbose: bool) -> Result<Vec<String>> {
+        self.query(true, names, verbose)
+    }
+
+    fn query(&mut self, libs: bool, names: &[String], verbose: bool) -> Result<Vec<String>> {
+        self.query_with(libs, names, verbose, pkg_config_query)
+    }
+
+    fn query_with<F>(
+        &mut self,
+        libs: bool,
+        names: &[String],
+        verbose: bool,
+        query: F,
+    ) -> Result<Vec<String>>
+    where
+        F: FnOnce(bool, &[String], bool) -> Result<Vec<String>>,
+    {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let key = (libs, names.to_vec());
+        if let Some(value) = self.values.get(&key) {
+            return Ok(value.clone());
+        }
+        let value = query(libs, names, verbose)?;
+        self.values.insert(key, value.clone());
+        Ok(value)
+    }
 }
 
 /// Top-level `cbld build` entry point.
@@ -535,11 +577,28 @@ fn cmd_build(args: BuildArgs, verbose: bool, quiet: bool, json: bool) -> Result<
     let root = project_root(args.manifest_path.as_deref())?;
     let manifest = Manifest::load(&root)?;
 
+    let mut pkg_config = PkgConfigCache::default();
     let outcome = if manifest.is_workspace() {
         // Workspaces build each member; we surface the last member's artifact.
-        build_workspace(&root, &manifest, &args, verbose, quiet, json)?
+        build_workspace(
+            &root,
+            &manifest,
+            &args,
+            verbose,
+            quiet,
+            json,
+            &mut pkg_config,
+        )?
     } else {
-        build_single(&root, &manifest, &args, verbose, quiet, json)?
+        build_single(
+            &root,
+            &manifest,
+            &args,
+            verbose,
+            quiet,
+            json,
+            &mut pkg_config,
+        )?
     };
 
     // Automatic IDE integration: every successful build regenerates
@@ -565,6 +624,7 @@ fn build_single(
     verbose: bool,
     quiet: bool,
     json: bool,
+    pkg_config: &mut PkgConfigCache,
 ) -> Result<BuildOutcome> {
     // `require_package` runs before layout discovery so `[package] source_dir`
     // (and the CLI `--from` override) can redirect where cbld looks for the
@@ -626,15 +686,7 @@ fn build_single(
 
     // Build dependencies first so their archives/headers exist.
     let target_dir = engine::target_dir(root, target.triple.as_deref());
-    let deps = build_dependencies(
-        &resolved,
-        args,
-        verbose,
-        quiet,
-        json,
-        target.triple.as_deref(),
-        target.sysroot.as_deref(),
-    )?;
+    let deps = build_dependencies(&resolved, args, verbose, quiet, json, &target, pkg_config)?;
 
     // --- Compile the root package ----------------------------------------
     let features = manifest.resolve_features(&args.features, args.no_default_features);
@@ -650,8 +702,8 @@ fn build_single(
     let mut include_dirs = package_include_dirs(root, &package);
     include_dirs.extend(deps.includes);
 
-    let pkg_cflags = pkg_config_cflags(&package.pkg_config, verbose)?;
-    let mut pkg_libs = pkg_config_libs(&package.pkg_config, verbose)?;
+    let pkg_cflags = pkg_config.cflags(&package.pkg_config, verbose)?;
+    let mut pkg_libs = pkg_config.libs(&package.pkg_config, verbose)?;
     pkg_libs.extend(deps.pkg_libs.clone());
     package.libs.extend(pkg_libs);
     let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
@@ -790,6 +842,7 @@ fn build_workspace(
     verbose: bool,
     quiet: bool,
     json: bool,
+    pkg_config: &mut PkgConfigCache,
 ) -> Result<BuildOutcome> {
     let members = manifest
         .workspace
@@ -805,7 +858,15 @@ fn build_workspace(
         if !quiet {
             println!("\x1b[1;36m   Workspace\x1b[0m building member '{member}'");
         }
-        let outcome = build_single(&member_root, &member_manifest, args, verbose, quiet, json)?;
+        let outcome = build_single(
+            &member_root,
+            &member_manifest,
+            args,
+            verbose,
+            quiet,
+            json,
+            pkg_config,
+        )?;
         all_compile_commands.extend(outcome.compile_commands.clone());
         last = Some(outcome);
     }
@@ -832,8 +893,8 @@ fn build_dependencies(
     verbose: bool,
     quiet: bool,
     json: bool,
-    cross_target: Option<&str>,
-    sysroot: Option<&Path>,
+    target: &TargetConfig,
+    pkg_config: &mut PkgConfigCache,
 ) -> Result<DepArtifacts> {
     let mut includes = Vec::new();
     let mut archives = Vec::new();
@@ -882,8 +943,8 @@ fn build_dependencies(
         // being actively worked on, not its (already-stable) dependencies.
         // They *are* cross-compiled for `cross_target`, though — see the
         // doc comment above.
-        let dep_pkg_cflags = pkg_config_cflags(&dep_package.pkg_config, verbose)?;
-        let dep_pkg_libs = pkg_config_libs(&dep_package.pkg_config, verbose)?;
+        let dep_pkg_cflags = pkg_config.cflags(&dep_package.pkg_config, verbose)?;
+        let dep_pkg_libs = pkg_config.libs(&dep_package.pkg_config, verbose)?;
         pkg_libs.extend(dep_pkg_libs.clone());
         let mut dep_c = dep_manifest.profile.c.clone().unwrap_or_default();
         let mut dep_cpp = dep_manifest.profile.cpp.clone().unwrap_or_default();
@@ -897,13 +958,13 @@ fn build_dependencies(
             &dep_features,
             args.release,
             false,
-            cross_target.map(|t| t.to_string()),
-            sysroot.map(Path::to_path_buf),
+            target.triple.clone(),
+            target.sysroot.clone(),
             dep_package.defines.clone(),
             dep_package.ignore_warnings,
         );
 
-        let dep_target = engine::target_dir(&dep.cache_path, cross_target);
+        let dep_target = engine::target_dir(&dep.cache_path, target.triple.as_deref());
         let engine = Engine::new(jobs(args), verbose, quiet, json, false);
 
         // Force library output for dependencies even if they expose main.*.
@@ -1010,6 +1071,7 @@ fn cmd_run(args: RunArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> 
 /// package you're working on, not its already-vetted dependencies.
 fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
     let quiet_eff = quiet || json;
+    let mut pkg_config = PkgConfigCache::default();
     let res = (|| -> Result<()> {
         let root = project_root(args.manifest_path.as_deref())?;
         let manifest = Manifest::load(&root)?;
@@ -1021,6 +1083,7 @@ fn cmd_check(args: CheckArgs, verbose: bool, quiet: bool, json: bool) -> Result<
                 args.no_default_features,
                 args.target.as_deref(),
                 verbose,
+                &mut pkg_config,
             )?;
             let engine = Engine::new(resolve_jobs(args.jobs), verbose, quiet_eff, json, false);
             engine.check_package(&layout, &compiler)
@@ -1082,6 +1145,7 @@ fn cmd_fmt(args: FmtArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> 
 /// `cbld lint` — clang-tidy the package (or every workspace member).
 fn cmd_lint(args: LintArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
     let quiet_eff = quiet || json;
+    let mut pkg_config = PkgConfigCache::default();
     let res = (|| -> Result<()> {
         let root = project_root(args.manifest_path.as_deref())?;
         let manifest = Manifest::load(&root)?;
@@ -1093,6 +1157,7 @@ fn cmd_lint(args: LintArgs, verbose: bool, quiet: bool, json: bool) -> Result<()
                 args.no_default_features,
                 args.target.as_deref(),
                 verbose,
+                &mut pkg_config,
             )?;
             lint::run(&layout, &compiler, args.deny_warnings, verbose, quiet_eff)
         })
@@ -1154,6 +1219,7 @@ fn analysis_compiler(
     no_default_features: bool,
     target: Option<&str>,
     verbose: bool,
+    pkg_config: &mut PkgConfigCache,
 ) -> Result<(Layout, Compiler)> {
     let package = require_package(manifest, root)?;
     let scan = scan_config(None, &package)?;
@@ -1181,7 +1247,7 @@ fn analysis_compiler(
         if let Some(pkg) = dep_manifest.package {
             include_dirs.extend(dependency_include_dirs(&dep.cache_path, &pkg));
             if !pkg.pkg_config.is_empty() {
-                dep_pkg_cflags.extend(pkg_config_cflags(&pkg.pkg_config, verbose)?);
+                dep_pkg_cflags.extend(pkg_config.cflags(&pkg.pkg_config, verbose)?);
             }
         }
     }
@@ -1190,7 +1256,7 @@ fn analysis_compiler(
     let target = effective_target(target, manifest, root)?;
     let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
     let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
-    let root_cflags = pkg_config_cflags(&package.pkg_config, verbose)?;
+    let root_cflags = pkg_config.cflags(&package.pkg_config, verbose)?;
     c_profile.extra_flags.extend(root_cflags.clone());
     c_profile.extra_flags.extend(dep_pkg_cflags.clone());
     cpp_profile.extra_flags.extend(root_cflags);
@@ -1698,18 +1764,16 @@ fn short_sha(sha: &str) -> &str {
     }
 }
 
-fn pkg_config_cflags(names: &[String], verbose: bool) -> Result<Vec<String>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
+fn pkg_config_query(libs: bool, names: &[String], verbose: bool) -> Result<Vec<String>> {
     let mut cmd = Command::new("pkg-config");
-    cmd.arg("--cflags");
+    cmd.arg(if libs { "--libs" } else { "--cflags" });
     for n in names {
         cmd.arg(n);
     }
     if verbose {
         eprintln!(
-            "  \x1b[2m[pkg-config]\x1b[0m pkg-config --cflags {}",
+            "  \x1b[2m[pkg-config]\x1b[0m pkg-config {} {}",
+            if libs { "--libs" } else { "--cflags" },
             names.join(" ")
         );
     }
@@ -1722,44 +1786,8 @@ fn pkg_config_cflags(names: &[String], verbose: bool) -> Result<Vec<String>> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(CbldError::Config(format!(
-            "pkg-config --cflags {} failed: {}",
-            names.join(" "),
-            if stderr.is_empty() {
-                "package not found".to_string()
-            } else {
-                stderr
-            }
-        )));
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text.split_whitespace().map(|s| s.to_string()).collect())
-}
-
-fn pkg_config_libs(names: &[String], verbose: bool) -> Result<Vec<String>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut cmd = Command::new("pkg-config");
-    cmd.arg("--libs");
-    for n in names {
-        cmd.arg(n);
-    }
-    if verbose {
-        eprintln!(
-            "  \x1b[2m[pkg-config]\x1b[0m pkg-config --libs {}",
-            names.join(" ")
-        );
-    }
-    let out = cmd.output().map_err(|e| {
-        CbldError::Environment(format!(
-            "pkg-config not found on PATH (needed for pkg_config = [{}]): {e}",
-            names.join(", ")
-        ))
-    })?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(CbldError::Config(format!(
-            "pkg-config --libs {} failed: {}",
+            "pkg-config {} {} failed: {}",
+            if libs { "--libs" } else { "--cflags" },
             names.join(" "),
             if stderr.is_empty() {
                 "package not found".to_string()
@@ -2022,5 +2050,26 @@ mod tests {
         let cli = effective_target(Some("x86_64-unknown-linux-gnu"), &manifest, &root).unwrap();
         assert_eq!(cli.triple.as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(cli.sysroot, None);
+    }
+
+    #[test]
+    fn pkg_config_cache_runs_duplicate_query_once() {
+        use std::cell::Cell;
+
+        let names = vec!["openssl".to_string()];
+        let mut cache = PkgConfigCache::default();
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            assert_eq!(
+                cache
+                    .query_with(false, &names, false, |_, _, _| {
+                        calls.set(calls.get() + 1);
+                        Ok(vec!["-I/include".to_string()])
+                    })
+                    .unwrap(),
+                vec!["-I/include".to_string()]
+            );
+        }
+        assert_eq!(calls.get(), 1);
     }
 }

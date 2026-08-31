@@ -4,6 +4,11 @@
 
 Future changes.
 
+## [0.5.1] - 2026-08-31
+
+- C++20 module scanning ignores comments and raw string literals.
+- Cache `pkg-config` queries within each build, check, lint, or workspace request.
+
 ## [0.5.0] - 2026-08-31
 
 - `cbld test`: discover, build, run, and parse C/C++ test suites with JSON output.
