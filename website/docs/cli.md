@@ -1,6 +1,6 @@
 # CLI Reference
 
-Global flags: `-v` / `--verbose`, `-q` / `--quiet`, `--json` (honored by `build` and `doctor` only).
+Global flags: `-v` / `--verbose`, `-q` / `--quiet`, `--json` (honored by `build`, `test`, and `doctor`).
 
 ## `build`
 
@@ -52,6 +52,24 @@ cbld fmt --check
 ```
 
 `--check` fails if any file would change. Style comes from `.clang-format` in the package root when present; otherwise LLVM. Needs `clang-format` on PATH.
+
+## `test`
+
+Discover, compile, link, and run a test executable. Test sources are collected
+from `tests/`, `test/`, `src/tests/`, `src/test_*`, and `src/*_test.*`.
+The suite must use one language, either C or C++. If the package is a library,
+its artifact is built first and linked into the test executable.
+
+```bash
+cbld test
+cbld test Smoke.*
+cbld test --json
+```
+
+Flags: `FILTER`, `-j` / `--jobs`, `--manifest-path`, `--features`,
+`--no-default-features`, and `--target`. The filter is passed to the test
+binary as `--gtest_filter=<FILTER>`; other frameworks may ignore it. JSON
+success output includes `passed`, `failed`, and `binary` fields.
 
 ## `lint`
 

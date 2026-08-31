@@ -807,6 +807,16 @@ impl Engine {
         Ok(())
     }
 
+    /// Public wrapper for `cbld test` — compile a set of units for the test binary.
+    pub fn compile_for_test(&self, units: Vec<CompileUnit>) -> Result<Vec<PathBuf>> {
+        self.compile_all(units)
+    }
+
+    /// Public wrapper for `cbld test` — link the test binary.
+    pub fn run_link_for_test(&self, links: &[LinkCommand], kind: Crate) -> Result<()> {
+        self.run_link(links, kind)
+    }
+
     /// Run all compile units across a fixed-size thread pool.
     fn compile_all(&self, units: Vec<CompileUnit>) -> Result<Vec<PathBuf>> {
         let total = units.len();
@@ -929,7 +939,10 @@ impl Engine {
                     Crate::Shared => ("Linking", "\x1b[1;95m"),
                     Crate::Header => ("Header", "\x1b[1;92m"),
                 };
-                println!("{color}     {verb}\x1b[0m via \x1b[96m{}\x1b[0m", link.program);
+                println!(
+                    "{color}     {verb}\x1b[0m via \x1b[96m{}\x1b[0m",
+                    link.program
+                );
             }
             if self.verbose {
                 eprintln!(

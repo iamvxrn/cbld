@@ -14,7 +14,7 @@ A build system for C and C++ projects with a fixed `src/` layout and Clang integ
 - Builds C/C++ with Clang (compile driver can fall back to gcc, tcc, zig cc).
 - Strict package layout (`cbld.toml`, `src/`, optional `include/`).
 - Git dependencies with `cbld.lock` (including transitives); overlay recipes for a few upstream trees that have no `cbld.toml`; `compile_commands.json` on every build.
-- `build`, `run`, `init`, `check`, `fmt`, `lint`, `update`, `sync`, `migrate`, `vendor`, `doctor`, `completions`.
+- `build`, `run`, `test`, `init`, `check`, `fmt`, `lint`, `update`, `sync`, `migrate`, `vendor`, `doctor`, `completions`.
 
 ## Quick Start
 
@@ -36,6 +36,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://cbld.pages.dev/install.ps1" -
 cbld init
 cbld build
 cbld run
+cbld test
 cbld fmt --check
 cbld lint --deny-warnings
 cbld check

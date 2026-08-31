@@ -1,10 +1,13 @@
-//! Test discovery for `cbld test`.
-//! Scans for test sources without touching the build graph.
+//! Test discovery and runner for `cbld test`.
+//! Scans for test sources, builds a test binary, and runs it.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use crate::compiler::Language;
+use crate::compiler::{Compiler, Language};
+use crate::engine::{Crate, Engine};
 use crate::error::{CbldError, IoPathExt, Result};
+use crate::manifest::Manifest;
 
 /// Collect all test sources for a package root.
 /// Looks in:
@@ -52,7 +55,7 @@ pub fn collect_test_sources(root: &Path) -> Result<Vec<PathBuf>> {
 
 fn scan_test_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    scan_rec(dir, dir, &mut out)?;
+    scan_rec(dir, &mut out)?;
     Ok(out)
 }
 
@@ -68,8 +71,10 @@ fn scan_src_tests(src: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_test = name.starts_with("test_") || name.contains("_test.")
-            || name.starts_with("test-") || name.contains("-test.");
+        let is_test = name.starts_with("test_")
+            || name.contains("_test.")
+            || name.starts_with("test-")
+            || name.contains("-test.");
         if is_test && Language::from_extension(&path).is_some() {
             out.push(path);
         }
@@ -77,11 +82,11 @@ fn scan_src_tests(src: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn scan_rec(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn scan_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir).path_ctx(dir)? {
         let path = entry.path_ctx(dir)?.path();
         if path.is_dir() {
-            scan_rec(base, &path, out)?;
+            scan_rec(&path, out)?;
         } else if Language::from_extension(&path).is_some() {
             out.push(path);
         } else if Language::is_header(&path) {
@@ -89,6 +94,162 @@ fn scan_rec(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Build a test binary from test sources.
+/// Returns the path to the built executable.
+pub struct TestBuildOptions<'a> {
+    pub active_features: &'a [String],
+    pub target: Option<&'a str>,
+    pub link_archives: &'a [PathBuf],
+    pub verbose: bool,
+    pub quiet: bool,
+    pub jobs: usize,
+}
+
+pub fn build_tests(
+    root: &Path,
+    manifest: &Manifest,
+    test_sources: &[PathBuf],
+    options: TestBuildOptions<'_>,
+) -> Result<PathBuf> {
+    let package = manifest
+        .package
+        .as_ref()
+        .ok_or_else(|| CbldError::Config("no [package] in cbld.toml".into()))?;
+    if test_sources.is_empty() {
+        return Err(CbldError::LayoutViolation(
+            "no test sources were discovered".into(),
+        ));
+    }
+    let target_dir = root.join("target").join("debug");
+    std::fs::create_dir_all(&target_dir).path_ctx(&target_dir)?;
+    let bin_name = "cbld-test";
+    let bin_path = target_dir.join(if cfg!(target_os = "windows") {
+        format!("{bin_name}.exe")
+    } else {
+        bin_name.to_string()
+    });
+
+    // Use the same compiler setup as normal builds but force executable
+    let c_profile = manifest.profile.c.clone().unwrap_or_default();
+    let cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
+    let include_dirs = package
+        .include_dirs
+        .iter()
+        .map(|dir| root.join(dir))
+        .collect();
+    let compiler = Compiler::new(
+        c_profile,
+        cpp_profile,
+        root,
+        include_dirs,
+        options.active_features,
+        false,
+        false,
+        options.target.map(str::to_owned),
+        package.defines.clone(),
+        package.ignore_warnings,
+    );
+    compiler.validate()?;
+
+    // Build a synthetic executable layout for test sources
+    // We bypass Layout and directly compile units
+    let engine = Engine::new(options.jobs, options.verbose, options.quiet, false, false);
+    let mut units = Vec::new();
+    let obj_dir = target_dir.join("obj").join("cbld-test");
+    std::fs::create_dir_all(&obj_dir).path_ctx(&obj_dir)?;
+    for src in test_sources {
+        let relative = src.strip_prefix(root).unwrap_or(src);
+        let mut obj = obj_dir.join(relative);
+        obj.set_extension("o");
+        if let Some(parent) = obj.parent() {
+            std::fs::create_dir_all(parent).path_ctx(parent)?;
+        }
+        let unit = compiler.compile_unit(src, &obj)?;
+        units.push(unit);
+    }
+    // Also need language for linking: if any cpp, use cpp
+    let has_cpp = test_sources
+        .iter()
+        .any(|p| Language::from_extension(p) == Some(Language::Cpp));
+    // Compile
+    let objects = engine.compile_for_test(units)?;
+    // Link
+    let mut link_inputs = objects;
+    link_inputs.extend(options.link_archives.iter().cloned());
+    let links = compiler.link_command(
+        &link_inputs,
+        &bin_path,
+        has_cpp,
+        false,
+        false,
+        &package.libs,
+    );
+    engine.run_link_for_test(&links, Crate::Executable)?;
+
+    Ok(bin_path)
+}
+
+/// Run the test binary and return (passed, failed, output).
+pub fn run_tests(bin_path: &Path, filter: Option<&str>) -> Result<(usize, usize, String)> {
+    let mut cmd = Command::new(bin_path);
+    if let Some(f) = filter {
+        // Best-effort: pass as gtest filter and plain arg
+        cmd.arg(format!("--gtest_filter={f}"));
+        // Many frameworks also accept plain filter
+        // We do not double-add; the binary will ignore unknown flags
+    }
+    let out = cmd.output().map_err(|e| CbldError::CommandSpawn {
+        program: bin_path.display().to_string(),
+        source: e,
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let combined = format!("{stdout}\n{stderr}");
+    // Parse the common summaries; a plain executable still gets a useful
+    // one-pass/one-failure result from its exit status.
+    let (passed, failed) = parse_test_summary(&combined, out.status.success());
+    Ok((passed, failed, combined))
+}
+
+fn parse_test_summary(output: &str, success: bool) -> (usize, usize) {
+    let mut passed = None;
+    let mut failed = None;
+    for line in output.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("passed") {
+            passed = find_count_before(line, "passed").or_else(|| find_count_after_bracket(line));
+        }
+        if lower.contains("failed") {
+            failed = find_count_before(line, "failed").or_else(|| find_count_after_bracket(line));
+        }
+    }
+    if passed.is_some() || failed.is_some() {
+        return (passed.unwrap_or(0), failed.unwrap_or(0));
+    }
+    if success {
+        (1, 0)
+    } else {
+        (0, 1)
+    }
+}
+
+fn find_count_before(line: &str, label: &str) -> Option<usize> {
+    let tokens: Vec<_> = line.split_whitespace().collect();
+    tokens.windows(2).find_map(|window| {
+        let normalized = window[1].trim_matches(|c: char| !c.is_ascii_alphabetic());
+        (normalized.eq_ignore_ascii_case(label))
+            .then(|| window[0].parse::<usize>().ok())
+            .flatten()
+    })
+}
+
+fn find_count_after_bracket(line: &str) -> Option<usize> {
+    line.split_once(']')?
+        .1
+        .split_whitespace()
+        .find_map(|token| token.parse::<usize>().ok())
 }
 
 #[cfg(test)]
@@ -141,5 +302,19 @@ mod tests {
         write_file(&root.join("tests/a.cpp"), "int main(){return 0;}");
         write_file(&root.join("tests/b.c"), "int main(){return 0;}");
         assert!(collect_test_sources(root).is_err());
+    }
+
+    #[test]
+    fn parses_gtest_summary() {
+        assert_eq!(parse_test_summary("[  PASSED  ] 3 tests.", true), (3, 0));
+        assert_eq!(parse_test_summary("[  FAILED  ] 1 test.", false), (0, 1));
+    }
+
+    #[test]
+    fn parses_catch_summary() {
+        assert_eq!(
+            parse_test_summary("test cases: 3 | 2 passed | 1 failed", false),
+            (2, 1)
+        );
     }
 }

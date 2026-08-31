@@ -27,8 +27,8 @@ use std::process::Command;
 use std::time::Instant;
 
 use cli::{
-    BuildArgs, CheckArgs, Cli, Command as Cmd, FmtArgs, InitArgs, LintArgs, RunArgs, UpdateArgs,
-    VendorArgs,
+    BuildArgs, CheckArgs, Cli, Command as Cmd, FmtArgs, InitArgs, LintArgs, RunArgs, TestArgs,
+    UpdateArgs, VendorArgs,
 };
 use compiler::Compiler;
 use engine::{default_jobs, require_package, BuildDest, Crate, Engine, Layout, ScanConfig};
@@ -56,6 +56,7 @@ fn main() {
         Cmd::Check(args) => cmd_check(args, verbose, quiet, json),
         Cmd::Fmt(args) => cmd_fmt(args, verbose, quiet, json),
         Cmd::Lint(args) => cmd_lint(args, verbose, quiet, json),
+        Cmd::Test(args) => cmd_test(args, verbose, quiet, json),
         Cmd::Completions(args) => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
@@ -176,6 +177,133 @@ fn build_failure_payload(err: &CbldError, duration_ms: i64) -> Json {
         ("cache_hits".to_string(), Json::Number(0)),
         ("errors".to_string(), Json::Array(errors)),
     ])
+}
+
+struct TestOutcome {
+    passed: usize,
+    failed: usize,
+    binary: PathBuf,
+}
+
+fn cmd_test(args: TestArgs, verbose: bool, quiet: bool, json: bool) -> Result<()> {
+    let started = Instant::now();
+    let result = run_tests_command(args, verbose, if json { true } else { quiet });
+    if json {
+        let duration_ms = started.elapsed().as_millis() as i64;
+        let payload = match &result {
+            Ok(outcome) => Json::Object(vec![
+                ("status".to_string(), Json::str("success")),
+                ("duration_ms".to_string(), Json::Number(duration_ms)),
+                ("passed".to_string(), Json::Number(outcome.passed as i64)),
+                ("failed".to_string(), Json::Number(outcome.failed as i64)),
+                (
+                    "binary".to_string(),
+                    Json::str(outcome.binary.display().to_string()),
+                ),
+                ("errors".to_string(), Json::Array(Vec::new())),
+            ]),
+            Err(err) => Json::Object(vec![
+                ("status".to_string(), Json::str("failure")),
+                ("duration_ms".to_string(), Json::Number(duration_ms)),
+                ("passed".to_string(), Json::Number(0)),
+                ("failed".to_string(), Json::Number(0)),
+                (
+                    "errors".to_string(),
+                    Json::Array(vec![Json::Object(vec![
+                        ("severity".to_string(), Json::str("error")),
+                        ("message".to_string(), Json::str(err.to_string())),
+                    ])]),
+                ),
+            ]),
+        };
+        println!("{}", payload.render());
+    }
+    result.map(|_| ())
+}
+
+fn run_tests_command(args: TestArgs, verbose: bool, quiet: bool) -> Result<TestOutcome> {
+    let root = project_root(args.manifest_path.as_deref())?;
+    let manifest = Manifest::load(&root)?;
+    let active_features = manifest.resolve_features(&args.features, args.no_default_features);
+    let target = effective_target(args.target.as_deref(), &manifest);
+    let sources = test::collect_test_sources(&root)?;
+    let mut link_archives = Vec::new();
+
+    // A library package supplies the code under test. Standalone test trees
+    // without a buildable src/ package still work as well.
+    if let Some(package) = manifest.package.as_ref() {
+        let scan = scan_config(None, package)?;
+        if root.join(&scan.source_dir).is_dir() {
+            if let Ok(layout) = Layout::discover(&root, &scan) {
+                if matches!(layout.crate_kind, Crate::Library | Crate::Shared) {
+                    let built = cmd_build(
+                        BuildArgs {
+                            release: false,
+                            output: None,
+                            jobs: args.jobs,
+                            manifest_path: Some(root.clone()),
+                            features: args.features.clone(),
+                            no_default_features: args.no_default_features,
+                            trace: false,
+                            target: args.target.clone(),
+                            from: None,
+                            ignore_warnings: false,
+                        },
+                        verbose,
+                        quiet,
+                        false,
+                    )?;
+                    link_archives.push(built.artifact);
+                }
+            }
+        }
+    }
+
+    if !quiet {
+        println!(
+            "\x1b[1;96m     Test\x1b[0m discovered {} source{}",
+            sources.len(),
+            if sources.len() == 1 { "" } else { "s" }
+        );
+    }
+
+    let binary = test::build_tests(
+        &root,
+        &manifest,
+        &sources,
+        test::TestBuildOptions {
+            active_features: &active_features,
+            target: target.as_deref(),
+            link_archives: &link_archives,
+            verbose,
+            quiet,
+            jobs: resolve_jobs(args.jobs),
+        },
+    )?;
+    let (passed, failed, output) = test::run_tests(&binary, args.filter.as_deref())?;
+
+    if !quiet && !output.trim().is_empty() {
+        print!("{}", output);
+    }
+    if failed > 0 {
+        return Err(CbldError::CommandFailed {
+            program: binary.display().to_string(),
+            code: Some(1),
+            stderr: output,
+        });
+    }
+
+    if !quiet {
+        println!(
+            "\x1b[1;32m    Finished\x1b[0m test suite: {} passed",
+            passed
+        );
+    }
+    Ok(TestOutcome {
+        passed,
+        failed,
+        binary,
+    })
 }
 
 /// Run the (intentionally bare) build, and only pay for environment
