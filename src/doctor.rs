@@ -478,9 +478,9 @@ fn check_package_index_sync(verbose: bool) -> Check {
     }
 }
 
-/// Builtin overlay recipes (nlohmann/json, cJSON, fmt). Always succeeds when
-/// the binary was built with `registry/cbld-libs.toml`; lists the shorthands
-/// a consumer can put in `[dependencies]` without a fork.
+/// Builtin overlay recipes. Always succeeds when the binary was built with
+/// `registry/cbld-libs.toml`; lists the shorthands a consumer can put in
+/// `[dependencies]` without a fork.
 fn check_overlay_recipes() -> Check {
     let names = PackageIndex::builtin().overlay_shorthands();
     if names.is_empty() {
@@ -572,11 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn overlay_recipes_check_lists_the_three_official_shorthands() {
+    fn overlay_recipes_check_lists_official_shorthands() {
         let c = check_overlay_recipes();
         assert!(c.ok, "{}", c.detail);
         assert!(c.detail.contains("gh:nlohmann/json"), "{}", c.detail);
         assert!(c.detail.contains("gh:DaveGamble/cJSON"), "{}", c.detail);
         assert!(c.detail.contains("gh:fmtlib/fmt"), "{}", c.detail);
+        assert!(c.detail.contains("gh:CLIUtils/CLI11"), "{}", c.detail);
+        assert!(c.detail.contains("gh:google/googletest"), "{}", c.detail);
     }
 }

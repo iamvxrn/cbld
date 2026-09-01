@@ -231,13 +231,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_recipes_cover_the_three_ci_packages() {
+    fn builtin_recipes_cover_the_ci_packages() {
         let idx = PackageIndex::builtin();
         let json = idx.get("gh:nlohmann/json").expect("nlohmann/json recipe");
         assert_eq!(json.kind.as_deref(), Some("header"));
         assert!(json.is_overlay());
         let names = idx.overlay_shorthands();
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 8);
         assert!(names.iter().any(|s| s == "gh:nlohmann/json"));
 
         let cjson = idx.get("gh:DaveGamble/cJSON").expect("cJSON recipe");
@@ -248,6 +248,21 @@ mod tests {
         let fmt = idx.get("gh:fmtlib/fmt").expect("fmt recipe");
         assert_eq!(fmt.kind.as_deref(), Some("lib"));
         assert_eq!(fmt.include, vec!["format.cc", "os.cc"]);
+
+        for shorthand in [
+            "gh:CLIUtils/CLI11",
+            "gh:jarro2783/cxxopts",
+            "gh:doctest/doctest",
+            "gh:Neargye/magic_enum",
+        ] {
+            let recipe = idx.get(shorthand).expect("header-only recipe");
+            assert_eq!(recipe.kind.as_deref(), Some("header"));
+            assert!(recipe.is_overlay());
+        }
+
+        let gtest = idx.get("gh:google/googletest").expect("googletest recipe");
+        assert_eq!(gtest.kind.as_deref(), Some("lib"));
+        assert_eq!(gtest.include, vec!["googletest/src/gtest-all.cc"]);
     }
 
     #[test]

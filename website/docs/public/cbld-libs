@@ -4,8 +4,8 @@
 # directory. This file is the legacy `shorthand <url>` shape; it is still
 # accepted by `cbld sync` and `~/.cbld/cbld-libs`.
 #
-# Overlay recipes for nlohmann/json, cJSON, and fmt ship inside the cbld
-# binary. `cbld sync` is only needed to add or override entries.
+# Overlay recipes ship inside the cbld binary. `cbld sync` is only needed to
+# add or override entries.
 #
 # Example (legacy):
 # gh:iamvxrn/foo https://github.com/iamvxrn/foo.git

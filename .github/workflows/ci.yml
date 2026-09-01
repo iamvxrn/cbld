@@ -130,10 +130,20 @@ jobs:
             json: "3.11.3"
             cjson: "1.7.18"
             fmt: "11.2.0"
+            cli11: "2.6.2"
+            cxxopts: "3.2.1"
+            doctest: "2.4.11"
+            magic_enum: "0.9.7"
+            gtest: "1.17.0"
           - set: current
             json: "3.12.0"
             cjson: "1.7.19"
             fmt: "12.2.0"
+            cli11: "2.7.2"
+            cxxopts: "3.3.1"
+            doctest: "2.4.12"
+            magic_enum: "0.9.8"
+            gtest: "1.18.0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -153,7 +163,7 @@ jobs:
       - name: cargo build
         run: cargo build --verbose
 
-      - name: Build nlohmann/json, cJSON, fmt from upstream
+      - name: Build overlay recipes from upstream
         shell: bash
         env:
           CBLD_HOME: ${{ runner.temp }}/cbld-home-${{ matrix.set }}
@@ -174,23 +184,45 @@ jobs:
           "gh:nlohmann/json" = "${{ matrix.json }}"
           "gh:DaveGamble/cJSON" = "${{ matrix.cjson }}"
           "gh:fmtlib/fmt" = "${{ matrix.fmt }}"
+          "gh:CLIUtils/CLI11" = "${{ matrix.cli11 }}"
+          "gh:jarro2783/cxxopts" = "${{ matrix.cxxopts }}"
+          "gh:doctest/doctest" = "${{ matrix.doctest }}"
+          "gh:Neargye/magic_enum" = "${{ matrix.magic_enum }}"
+          "gh:google/googletest" = "${{ matrix.gtest }}"
           EOF
           cat > "$WORK/src/main.cpp" <<'EOF'
           #include <cJSON.h>
+          #include <CLI/CLI.hpp>
+          #include <cxxopts.hpp>
+          #define DOCTEST_CONFIG_IMPLEMENT
+          #include <doctest/doctest.h>
           #include <fmt/core.h>
+          #include <magic_enum/magic_enum.hpp>
           #include <nlohmann/json.hpp>
+          #include <gtest/gtest.h>
 
-          int main() {
-            nlohmann::json j = {{"ok", true}};
-            cJSON* c = cJSON_Parse("{\"ok\":true}");
-            if (!c) {
-              return 1;
-            }
-            cJSON_Delete(c);
-            fmt::print("{}\n", j.dump());
-            return 0;
+          enum class Status { ok };
+
+          TEST(OverlayRecipe, GoogleTest) {
+             EXPECT_EQ(1 + 1, 2);
+          }
+
+          int main(int argc, char** argv) {
+             CLI::App app("overlay_probe");
+             cxxopts::Options options("overlay_probe");
+             nlohmann::json j = {{"ok", true}};
+             cJSON* c = cJSON_Parse("{\"ok\":true}");
+             if (!c) {
+               return 1;
+             }
+             cJSON_Delete(c);
+             if (magic_enum::enum_name(Status::ok) != "ok" || DOCTEST_VERSION_MAJOR != 2) {
+               return 2;
+             }
+             fmt::print("{}\n", j.dump());
+             testing::InitGoogleTest(&argc, argv);
+             return RUN_ALL_TESTS();
           }
           EOF
           "$BIN" build --manifest-path "$WORK"
           "$WORK/target/debug/overlay_probe"
-

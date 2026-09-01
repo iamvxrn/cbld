@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-Future changes.
+- Built-in overlay recipes for CLI11, cxxopts, doctest, magic_enum, and GoogleTest.
 
 ## [0.5.2] - 2026-09-02
 
