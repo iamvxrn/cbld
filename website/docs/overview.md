@@ -24,4 +24,4 @@ graph TD
 
 `gh:owner/repo` clones GitHub directly. A short list of upstream trees has overlay recipes in the binary — see [Packages](/packages). Clone as-is; a `cbld.toml` in the clone always wins.
 
-`cbld sync` downloads an index into `~/.cbld/cbld-libs` when `CBLD_LIBS_URL` is set (TOML recipes or legacy `shorthand <url>` lines). There is **no public registry**. See [architecture](/architecture).
+`cbld sync` downloads the official [`iamvxrn/cbld` registry](https://github.com/iamvxrn/cbld/blob/main/registry/cbld-libs.toml) into `~/.cbld/cbld-libs` (TOML recipes or legacy `shorthand <url>` lines). `cbld doctor` refreshes it automatically. Set `CBLD_LIBS_URL` to use a private or forked index. See [architecture](/architecture).

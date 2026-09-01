@@ -4,6 +4,11 @@
 
 Future changes.
 
+## [0.5.2] - 2026-09-02
+
+- Sync the official `iamvxrn/cbld` package index by default; `CBLD_LIBS_URL` overrides it for private or forked indexes.
+- Refresh the package index during every `cbld doctor` run and report its result.
+
 ## [0.5.1] - 2026-08-31
 
 - C++20 module scanning ignores comments and raw string literals.

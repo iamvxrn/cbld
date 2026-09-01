@@ -55,13 +55,14 @@ pub enum Command {
     /// (`~/.cbld/cbld-libs`) — see `Sync` for that.
     Update(UpdateArgs),
 
-    /// Diagnose the local toolchain and environment (clang, ar, headers, ...).
+    /// Diagnose the local toolchain and environment, refreshing the package index.
     Doctor,
 
     /// Refresh the local package index (~/.cbld/cbld-libs) from a remote index.
     ///
-    /// Requires `CBLD_LIBS_URL`. Touches only that one index file via native
-    /// OS fetch tools (TOML recipes or the legacy `shorthand <url>` format).
+    /// Uses the official index by default; `CBLD_LIBS_URL` overrides it. Touches
+    /// only that one index file via native OS fetch tools (TOML recipes or the
+    /// legacy `shorthand <url>` format).
     /// Never resolves dependencies, never touches a project's `cbld.lock` —
     /// see `Update` for that. A handful of overlay recipes ship built-in and
     /// work without syncing.

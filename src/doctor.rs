@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::json::Json;
 use crate::manifest::{Manifest, ToolchainSpec};
 use crate::recipe::PackageIndex;
+use crate::resolver::Resolver;
 
 /// One diagnostic check and its outcome.
 struct Check {
@@ -42,6 +43,7 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
         check_fetch_tool(),
         check_system_headers(),
         check_cbld_home(),
+        check_package_index_sync(verbose),
         check_pkg_config(),
         check_overlay_recipes(),
     ];
@@ -454,6 +456,25 @@ fn check_cbld_home() -> Check {
                 }
             }
         }
+    }
+}
+
+/// Refresh the package index as part of every diagnostic run so the next build
+/// resolves against the current official recipes.
+fn check_package_index_sync(verbose: bool) -> Check {
+    match Resolver::new(verbose).and_then(|resolver| resolver.sync_index(true)) {
+        Ok(()) => Check {
+            name: "package index",
+            ok: true,
+            detail: "synced".to_string(),
+            fix: None,
+        },
+        Err(e) => Check {
+            name: "package index",
+            ok: false,
+            detail: e.to_string(),
+            fix: Some("check network access or set CBLD_LIBS_URL to a reachable index".into()),
+        },
     }
 }
 

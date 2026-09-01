@@ -53,7 +53,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
-           TAG_NAME="${GITHUB_REF_NAME:-v0.5.1}"
+           TAG_NAME="${GITHUB_REF_NAME:-v0.5.2}"
           tar -czf "dist/cbld-${TAG_NAME}-${{ matrix.asset_name }}" -C target/${{ matrix.target }}/release cbld
 
       - name: Package Artifact (Windows)
@@ -61,7 +61,7 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path dist
-           $TAG_NAME = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.5.1" }
+           $TAG_NAME = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.5.2" }
           Compress-Archive -Path "target/${{ matrix.target }}/release/cbld.exe" -DestinationPath "dist/cbld-${TAG_NAME}-${{ matrix.asset_name }}"
 
       - name: Upload Release Asset

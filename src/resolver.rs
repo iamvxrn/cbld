@@ -20,6 +20,11 @@ use crate::error::{CbldError, IoPathExt, Result};
 use crate::manifest::{Dependency, LockedDependency, Lockfile, Manifest};
 use crate::recipe::PackageIndex;
 
+/// Official package-index endpoint. `CBLD_LIBS_URL` may override this for a
+/// private or forked registry.
+const DEFAULT_LIBS_URL: &str =
+    "https://raw.githubusercontent.com/iamvxrn/cbld/main/registry/cbld-libs.toml";
+
 /// A single resolved dependency, ready to be built and recorded.
 #[derive(Debug, Clone)]
 pub struct ResolvedDep {
@@ -433,19 +438,7 @@ impl Resolver {
     /// crate. That keeps the dependency tree and compile times exactly as
     /// small as the rest of cbld.
     pub fn sync_index(&self, quiet: bool) -> Result<()> {
-        let url = match std::env::var("CBLD_LIBS_URL") {
-            Ok(v) if !v.trim().is_empty() => v,
-            _ => {
-                return Err(CbldError::Config(
-                    "no package index URL configured — set CBLD_LIBS_URL to a TOML \
-                     recipe index (or a legacy shorthand+URL file). A public cbld \
-                     registry is not published; overlay recipes for nlohmann/json, \
-                     cJSON, and fmt ship built-in, and `gh:user/repo` still resolves \
-                     without `cbld sync`"
-                        .into(),
-                ));
-            }
-        };
+        let url = package_index_url();
         let dest = self.home.join("cbld-libs");
         let tmp = self.home.join("cbld-libs.tmp");
 
@@ -467,6 +460,13 @@ impl Resolver {
         }
         Ok(())
     }
+}
+
+fn package_index_url() -> String {
+    std::env::var("CBLD_LIBS_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_LIBS_URL.to_string())
 }
 
 /// Fetch `url` into `dest` using only OS-native tools — no HTTP crate.
@@ -633,32 +633,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sync_index_requires_cbld_libs_url() {
-        let prev_home = std::env::var("CBLD_HOME").ok();
+    fn sync_index_uses_official_url_when_unset() {
         let prev_url = std::env::var("CBLD_LIBS_URL").ok();
         std::env::remove_var("CBLD_LIBS_URL");
-
-        let home = std::env::temp_dir().join(format!("cbld-sync-test-{}", std::process::id()));
-        std::env::set_var("CBLD_HOME", &home);
-
-        let resolver = Resolver::new(false).expect("resolver");
-        let err = resolver.sync_index(true).unwrap_err();
-        assert!(
-            err.to_string().contains("CBLD_LIBS_URL"),
-            "unexpected error: {err}"
-        );
-
-        if let Some(v) = prev_home {
-            std::env::set_var("CBLD_HOME", v);
-        } else {
-            std::env::remove_var("CBLD_HOME");
-        }
+        let url = package_index_url();
+        assert_eq!(url, DEFAULT_LIBS_URL);
         if let Some(v) = prev_url {
             std::env::set_var("CBLD_LIBS_URL", v);
         } else {
             std::env::remove_var("CBLD_LIBS_URL");
         }
-        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
