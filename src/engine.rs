@@ -23,6 +23,11 @@ use crate::modules::{self, ModuleGraph};
 use crate::resolver;
 use crate::trace;
 
+/// Filename of the compile-flag stamp written beside a package's object
+/// files. Object mtimes cannot detect a `cbld.toml` / CLI flag change, so the
+/// resolved flag fingerprint is persisted here and compared on every build.
+const FINGERPRINT_STAMP: &str = ".cbld-fingerprint";
+
 /// What kind of artifact a package produces. Normally decided by which entry
 /// file the layout contains (`main.*` → executable, `lib.*` → library), but
 /// overridable via `[package] kind` for trees whose sources aren't
@@ -511,16 +516,21 @@ impl Engine {
             })
             .collect();
 
+        // The resolved compiler flag set for this package's language mix.
+        // Feeds both the global archive cache key *and* — crucially — the
+        // per-file incremental check below: an object file is only fresh if
+        // it was produced by these exact flags.
+        let languages: Vec<Language> = sources
+            .iter()
+            .filter_map(|source| Language::from_extension(source))
+            .collect();
+        let fingerprint = compiler.cache_fingerprint_for(&languages)?;
+
         // --- Global cache short-circuit ---------------------------------
         // Before spinning up the compile thread-pool, see whether a
         // byte-identical build (same sources, same flags, same target) has
         // already been cached globally under ~/.cbld/cache/prebuilt/{hash}.
         let cache_key = if layout.crate_kind == Crate::Library && !module_graph.has_modules {
-            let languages: Vec<Language> = sources
-                .iter()
-                .filter_map(|source| Language::from_extension(source))
-                .collect();
-            let fingerprint = compiler.cache_fingerprint_for(&languages)?;
             let mut cache_files = sources.clone();
             cache_files.extend(scan_headers(&layout.src, &layout.include, &layout.exclude)?);
             let include_dir = layout.root.join("include");
@@ -570,7 +580,23 @@ impl Engine {
         }
 
         // Per-file incremental: skip TUs whose object is newer than source
-        // and all headers in the previous .d depfile.
+        // and all headers in the previous .d depfile — but only when the
+        // compile flags themselves are unchanged. mtimes say nothing about
+        // `[profile.*]` edits, `[package] defines`, `--features`, or
+        // `--ignore-warnings`, so without this stamp a manifest edit would
+        // silently relink yesterday's objects (a stale artifact).
+        let stamp_path = obj_dir.join(FINGERPRINT_STAMP);
+        let stamp = fingerprint.join("\u{1f}");
+        let flags_changed = match fs::read_to_string(&stamp_path) {
+            Ok(previous) => previous != stamp,
+            // No stamp yet: objects (if any) predate flag tracking and cannot
+            // be trusted, so treat them as dirty.
+            Err(_) => true,
+        };
+        if flags_changed && self.verbose {
+            eprintln!("  \x1b[2m[engine]\x1b[0m compile flags changed; recompiling every unit");
+        }
+
         let mut to_compile: Vec<CompileUnit> = Vec::new();
         let mut all_objects: Vec<PathBuf> = Vec::with_capacity(units.len());
         let mut skipped = 0usize;
@@ -581,7 +607,7 @@ impl Engine {
             for mut unit in units {
                 let depfile = unit.object.with_extension("d");
                 all_objects.push(unit.object.clone());
-                if object_is_fresh(&unit.source, &unit.object, &depfile) {
+                if !flags_changed && object_is_fresh(&unit.source, &unit.object, &depfile) {
                     skipped += 1;
                     continue;
                 }
@@ -670,6 +696,18 @@ impl Engine {
             &package.link_flags,
         );
         self.run_link(&link, layout.crate_kind)?;
+
+        // Record the flags these objects were built with. Written only after a
+        // successful link, so an interrupted build leaves the stamp stale (=
+        // "recompile everything") rather than falsely fresh.
+        if let Err(e) = fs::write(&stamp_path, &stamp) {
+            if self.verbose {
+                eprintln!(
+                    "  \x1b[2m[engine]\x1b[0m could not write {}: {e}",
+                    stamp_path.display()
+                );
+            }
+        }
 
         if !self.quiet {
             let kind = match layout.crate_kind {
@@ -1494,6 +1532,83 @@ mod tests {
             exclude: Vec::new(),
         };
         (layout, package)
+    }
+
+    /// Object files are only reusable while the flags that produced them are
+    /// unchanged. Editing `[profile.c] defines` moves no source mtime, so a
+    /// purely mtime-based incremental check would relink yesterday's objects
+    /// and hand the user a binary that silently disagrees with the manifest.
+    #[test]
+    fn changing_compile_flags_recompiles_instead_of_relinking_stale_objects() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!("skipping: clang not available in this environment");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "cbld-flagstamp-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.c"), "int main(void){ return MODE; }\n").unwrap();
+
+        let layout = Layout::discover(&root, &ScanConfig::strict("src")).unwrap();
+        assert_eq!(layout.crate_kind, Crate::Executable);
+        let (_, mut package) = make_library_package(&root.join("unused"), "flagstamp");
+        package.name = "flagstamp".to_string();
+
+        let target_dir = root.join("target");
+        let engine = Engine::new(1, false, true, false, false);
+
+        let build_with_mode = |mode: &str| -> PathBuf {
+            let compiler = Compiler::new(
+                CProfile {
+                    defines: vec![format!("MODE={mode}")],
+                    ..CProfile::default()
+                },
+                CppProfile::default(),
+                &root,
+                Vec::new(),
+                &[],
+                false,
+                false,
+                None,
+                Vec::new(),
+                false,
+            );
+            engine
+                .build_package(
+                    &layout,
+                    &package,
+                    &compiler,
+                    BuildDest {
+                        target_dir: &target_dir,
+                        output_name: None,
+                        release: false,
+                        dependency_has_cpp: false,
+                    },
+                    &[],
+                )
+                .unwrap()
+                .path
+        };
+
+        let first = build_with_mode("0");
+        let code = Command::new(&first).status().unwrap().code().unwrap();
+        assert_eq!(code, 0, "first build must observe MODE=0");
+
+        // Only the flags change: src/main.c is byte-identical and its mtime
+        // is untouched, so this is exactly the case mtimes cannot catch.
+        let second = build_with_mode("3");
+        let code = Command::new(&second).status().unwrap().code().unwrap();
+        assert_eq!(
+            code, 3,
+            "a define change must recompile; got a stale object built with the old flags"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// A custom `source_dir` (legacy support) must be honored end-to-end: the

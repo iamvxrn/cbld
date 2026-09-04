@@ -165,8 +165,7 @@ pub(crate) fn build_runner_binary(
     std::fs::create_dir_all(&obj_dir).path_ctx(&obj_dir)?;
     for src in test_sources {
         let relative = src.strip_prefix(root).unwrap_or(src);
-        let mut obj = obj_dir.join(relative);
-        obj.set_extension("o");
+        let obj = runner_object_path(&obj_dir, relative);
         if let Some(parent) = obj.parent() {
             std::fs::create_dir_all(parent).path_ctx(parent)?;
         }
@@ -193,6 +192,20 @@ pub(crate) fn build_runner_binary(
     engine.run_link_for_test(&links, Crate::Executable)?;
 
     Ok(bin_path)
+}
+
+/// Object path for one runner translation unit.
+///
+/// The source extension is *appended* rather than replaced: a suite may hold
+/// `suite.c` and `suite.cpp` side by side (cbld compiles mixed-language
+/// suites), and replacing the extension maps both onto one `suite.o` — the
+/// second compile clobbers the first and the same object reaches the linker
+/// twice, producing "multiple definition" plus undefined references.
+fn runner_object_path(obj_dir: &Path, relative: &Path) -> PathBuf {
+    match relative.file_name().and_then(|n| n.to_str()) {
+        Some(name) => obj_dir.join(relative).with_file_name(format!("{name}.o")),
+        None => obj_dir.join(relative),
+    }
 }
 
 /// Run the test binary and return (passed, failed, output).
@@ -259,6 +272,19 @@ fn find_count_after_bracket(line: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_objects_of_same_stem_different_language_do_not_collide() {
+        let obj_dir = Path::new("/tmp/obj");
+        let c = runner_object_path(obj_dir, Path::new("tests/suite.c"));
+        let cpp = runner_object_path(obj_dir, Path::new("tests/suite.cpp"));
+        assert_ne!(
+            c, cpp,
+            "a mixed-language suite must not map two sources onto one object"
+        );
+        assert_eq!(c, PathBuf::from("/tmp/obj/tests/suite.c.o"));
+        assert_eq!(cpp, PathBuf::from("/tmp/obj/tests/suite.cpp.o"));
+    }
     use std::fs;
 
     fn write_file(path: &Path, content: &str) {

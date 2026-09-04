@@ -113,6 +113,10 @@ struct DepArtifacts {
     includes: Vec<PathBuf>,
     archives: Vec<PathBuf>,
     pkg_libs: Vec<String>,
+    /// `[package] libs` declared by dependencies (directly or through an
+    /// overlay recipe). A dependency is archived, and an archiver takes no
+    /// `-l` flags, so these can only be satisfied at the consumer's link.
+    libs: Vec<String>,
     link_flags: Vec<String>,
     cflags: Vec<String>,
     has_cpp: bool,
@@ -710,6 +714,7 @@ fn build_single(
     let mut pkg_libs = pkg_config.libs(&package.pkg_config, verbose)?;
     pkg_libs.extend(deps.pkg_libs.clone());
     package.libs.extend(pkg_libs);
+    package.libs.extend(deps.libs.clone());
     package.link_flags.extend(deps.link_flags.clone());
     let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
     let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
@@ -908,6 +913,7 @@ fn build_dependencies(
     let mut includes = Vec::new();
     let mut archives = Vec::new();
     let mut pkg_libs = Vec::new();
+    let mut libs: Vec<String> = Vec::new();
     let mut link_flags = Vec::new();
     let mut cflags = Vec::new();
     let mut has_cpp = false;
@@ -930,7 +936,25 @@ fn build_dependencies(
         let dep_scan = scan_config(None, &dep_package)?;
         let dep_layout = Layout::discover(&dep.cache_path, &dep_scan)?;
 
+        // Include paths this dependency inherits from the dependencies that
+        // came before it. `resolved` is topological, so everything this
+        // package can legally `#include` from another package is already in
+        // `includes` at this point. Snapshot before adding this package's own
+        // dirs so its headers stay ahead of its dependencies' on the search
+        // path, mirroring how the root package is compiled.
+        let inherited_includes = includes.clone();
         includes.extend(dependency_include_dirs(&dep.cache_path, &dep_package));
+
+        // Link requirements travel with the package regardless of its kind:
+        // a header-only tree can still require `-lpthread` or a framework,
+        // and a compiled one is archived (the archiver drops `-l` flags), so
+        // both must be replayed on the consumer's link line.
+        for lib in &dep_package.libs {
+            if !libs.contains(lib) {
+                libs.push(lib.clone());
+            }
+        }
+        link_flags.extend(dep_package.link_flags.clone());
 
         if dep_layout.crate_kind == Crate::Header {
             if !quiet {
@@ -963,7 +987,6 @@ fn build_dependencies(
         let dep_pkg_cflags = pkg_config.cflags(&dep_package.pkg_config, verbose)?;
         let dep_pkg_libs = pkg_config.libs(&dep_package.pkg_config, verbose)?;
         pkg_libs.extend(dep_pkg_libs.clone());
-        link_flags.extend(dep_package.link_flags.clone());
         cflags.extend(dep_pkg_cflags.clone());
         let mut dep_c = dep_manifest.profile.c.clone().unwrap_or_default();
         let mut dep_cpp = dep_manifest.profile.cpp.clone().unwrap_or_default();
@@ -972,11 +995,13 @@ fn build_dependencies(
         let dep_target = engine::target_dir(&dep.cache_path, target.triple.as_deref());
         let generated_include_dirs =
             prepare_generated_outputs(&dep_package, &dep.cache_path, &dep_target)?;
+        let mut dep_includes = package_include_dirs(&dep.cache_path, &dep_package);
+        dep_includes.extend(inherited_includes);
         let dep_compiler = Compiler::new_with_sysroot(
             dep_c,
             dep_cpp,
             &dep.cache_path,
-            package_include_dirs(&dep.cache_path, &dep_package),
+            dep_includes,
             &dep_features,
             args.release,
             false,
@@ -1018,6 +1043,7 @@ fn build_dependencies(
         includes,
         archives,
         pkg_libs,
+        libs,
         link_flags,
         cflags,
         has_cpp,

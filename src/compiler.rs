@@ -763,6 +763,7 @@ impl Compiler {
     /// Like [`Self::link_command`], with raw link arguments preserved after
     /// library names. This supports platform frameworks and linker directives
     /// that cannot be represented as `-l<name>`.
+    #[allow(clippy::too_many_arguments)]
     pub fn link_command_with_flags(
         &self,
         objects: &[PathBuf],
