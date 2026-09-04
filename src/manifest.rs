@@ -58,6 +58,41 @@ pub struct TargetPreset {
     pub sysroot: String,
 }
 
+/// A deterministic header generated into the build output rather than written
+/// into an upstream checkout. Recipe ports use these for configuration headers
+/// selected by the effective target.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+pub struct GeneratedHeader {
+    /// Relative path below the package's generated include root.
+    pub path: String,
+    /// Fully rendered file contents.
+    pub content: String,
+}
+
+/// A declarative generation task executed before source scanning. Every output
+/// is rooted under target/.../generated; package checkouts remain immutable.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GenerateTask {
+    Write {
+        path: String,
+        content: String,
+    },
+    Copy {
+        source: String,
+        path: String,
+    },
+    Command {
+        program: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        outputs: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+}
+
 /// `[package]` table.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Package {
@@ -106,6 +141,17 @@ pub struct Package {
     /// executable (e.g. `pthread`, `m`). Ignored for static libraries.
     #[serde(default)]
     pub libs: Vec<String>,
+    /// Raw linker arguments needed by the package, such as `-framework Cocoa`
+    /// on macOS or linker search paths. Unlike `libs`, these are passed through
+    /// unchanged and preserve their ordering.
+    #[serde(default)]
+    pub link_flags: Vec<String>,
+    /// Headers materialized under target/.../generated before compilation.
+    #[serde(default)]
+    pub generated_headers: Vec<GeneratedHeader>,
+    /// Ordered, generic generation tasks run before compilation.
+    #[serde(default)]
+    pub generate: Vec<GenerateTask>,
     /// pkg-config packages to query for cflags/libs (e.g. `openssl`, `zlib`).
     /// Cflags are injected into every TU, libs into the final link. Requires
     /// `pkg-config` on PATH (`cbld doctor` checks it).

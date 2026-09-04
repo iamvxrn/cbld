@@ -87,13 +87,6 @@ impl Language {
             "h" | "hh" | "hpp" | "hxx" | "h++" | "inl"
         )
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Language::C => "C",
-            Language::Cpp => "C++",
-        }
-    }
 }
 
 /// Build a `Command` for a driver name that may include arguments (`zig cc`).
@@ -265,6 +258,9 @@ pub struct Compiler {
     own_include_dir: PathBuf,
     /// `-I` include directories shared by both languages (dependency headers).
     include_dirs: Vec<PathBuf>,
+    /// Generated configuration headers that must shadow an upstream tree's
+    /// static fallback headers without modifying that checkout.
+    priority_include_dirs: Vec<PathBuf>,
     /// `-D` defines injected for active features, e.g. `CBLD_FEATURE_SSL`.
     feature_defines: Vec<String>,
     /// Project-wide `-D` defines from `[package] defines`, applied to *both*
@@ -354,6 +350,7 @@ impl Compiler {
             // path if the directory doesn't exist yet to canonicalize.
             own_include_dir: include_dir.canonicalize().unwrap_or(include_dir),
             include_dirs,
+            priority_include_dirs: Vec::new(),
             feature_defines,
             package_defines,
             ignore_warnings,
@@ -363,6 +360,18 @@ impl Compiler {
             target,
             sysroot,
         }
+    }
+
+    /// Add generated header roots ahead of the package's own `include/` tree.
+    pub fn with_priority_include_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.priority_include_dirs = dirs;
+        self
+    }
+
+    /// Generated include roots whose contents must participate in a library
+    /// cache key, just like source-tree public headers.
+    pub fn priority_include_dirs(&self) -> &[PathBuf] {
+        &self.priority_include_dirs
     }
 
     /// Validate the profiles up front so a bad optimization level fails before
@@ -625,15 +634,19 @@ impl Compiler {
         args
     }
 
-    /// Flags-only fingerprint for the global build cache: every flag that
-    /// affects codegen, with no source/object paths baked in, so the same
-    /// flags produce the same cache key regardless of where the project
-    /// lives on disk.
-    pub fn cache_fingerprint(&self, language: Language) -> Result<Vec<String>> {
-        match language {
-            Language::C => self.c_flags(),
-            Language::Cpp => self.cpp_flags(),
+    /// Cache fingerprint for a package's complete language set. Prefixing each
+    /// profile avoids collisions between equal-looking C and C++ flag vectors.
+    pub fn cache_fingerprint_for(&self, languages: &[Language]) -> Result<Vec<String>> {
+        let mut fingerprint = Vec::new();
+        if languages.contains(&Language::C) {
+            fingerprint.push("language=c".to_string());
+            fingerprint.extend(self.c_flags()?);
         }
+        if languages.contains(&Language::Cpp) {
+            fingerprint.push("language=cpp".to_string());
+            fingerprint.extend(self.cpp_flags()?);
+        }
+        Ok(fingerprint)
     }
 
     /// Flags common to both languages: includes, defines, debug/release shaping.
@@ -698,6 +711,9 @@ impl Compiler {
             args.push(format!("--sysroot={}", sysroot.display()));
         }
 
+        for dir in &self.priority_include_dirs {
+            args.push(format!("-I{}", dir.display()));
+        }
         args.push(format!("-I{}", self.own_include_dir.display()));
         for dir in &self.include_dirs {
             args.push(format!("-I{}", dir.display()));
@@ -740,6 +756,22 @@ impl Compiler {
         is_library: bool,
         is_shared: bool,
         libs: &[String],
+    ) -> Vec<LinkCommand> {
+        self.link_command_with_flags(objects, output, has_cpp, is_library, is_shared, libs, &[])
+    }
+
+    /// Like [`Self::link_command`], with raw link arguments preserved after
+    /// library names. This supports platform frameworks and linker directives
+    /// that cannot be represented as `-l<name>`.
+    pub fn link_command_with_flags(
+        &self,
+        objects: &[PathBuf],
+        output: &Path,
+        has_cpp: bool,
+        is_library: bool,
+        is_shared: bool,
+        libs: &[String],
+        link_flags: &[String],
     ) -> Vec<LinkCommand> {
         if is_library && !is_shared {
             return archiver_candidates(objects, output);
@@ -790,17 +822,16 @@ impl Compiler {
                     args.push(format!("-l{lib}"));
                 }
             }
+            args.extend(link_flags.iter().cloned());
             return vec![LinkCommand {
                 program: driver.to_string(),
                 args,
             }];
         }
 
-        // A package is strictly single-language (enforced by the layout
-        // check upstream), so `has_cpp` doubles as "which profile's
-        // sanitizers/lto actually compiled this unit" — the same flags must
-        // reach the linker or the sanitizer runtime/LTO summary won't match
-        // what the object files were compiled with.
+        // A mixed C/C++ package links with the C++ driver when any C++ unit is
+        // present, so the C++ runtime is available. Its link profile owns the
+        // sanitizer/LTO flags for that final driver invocation.
         let (driver, profile_lto, profile_sanitizers) = if has_cpp {
             (
                 Language::Cpp.driver(),
@@ -849,6 +880,7 @@ impl Compiler {
                 args.push(format!("-l{lib}"));
             }
         }
+        args.extend(link_flags.iter().cloned());
         vec![LinkCommand {
             program: driver.to_string(),
             args,
@@ -1060,7 +1092,7 @@ mod tests {
     #[test]
     fn cache_fingerprint_excludes_paths_and_reflects_profile_changes() {
         let baseline = compiler();
-        let fp_debug = baseline.cache_fingerprint(Language::C).unwrap();
+        let fp_debug = baseline.cache_fingerprint_for(&[Language::C]).unwrap();
         assert!(!fp_debug
             .iter()
             .any(|f| f.contains(".c") || f.contains(".o")));
@@ -1081,9 +1113,40 @@ mod tests {
             Vec::new(),
             false,
         );
-        let fp_release = release.cache_fingerprint(Language::C).unwrap();
+        let fp_release = release.cache_fingerprint_for(&[Language::C]).unwrap();
 
         assert_ne!(fp_debug, fp_release);
+    }
+
+    #[test]
+    fn mixed_language_cache_fingerprint_includes_both_profiles() {
+        let c = Compiler::new(
+            CProfile {
+                defines: vec!["C_ONLY".to_string()],
+                ..CProfile::default()
+            },
+            CppProfile {
+                defines: vec!["CPP_ONLY".to_string()],
+                ..CppProfile::default()
+            },
+            Path::new("."),
+            Vec::new(),
+            &[],
+            false,
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let c_only = c.cache_fingerprint_for(&[Language::C]).unwrap();
+        let mixed = c
+            .cache_fingerprint_for(&[Language::C, Language::Cpp])
+            .unwrap();
+        assert!(mixed.contains(&"language=c".to_string()));
+        assert!(mixed.contains(&"language=cpp".to_string()));
+        assert!(mixed.contains(&"-DC_ONLY".to_string()));
+        assert!(mixed.contains(&"-DCPP_ONLY".to_string()));
+        assert_ne!(c_only, mixed);
     }
 
     #[test]
@@ -1609,5 +1672,24 @@ mod tests {
         for cmd in &lib_cmds {
             assert!(!cmd.args.iter().any(|a| a.starts_with("-l")));
         }
+    }
+
+    #[test]
+    fn link_command_preserves_raw_platform_flags_after_libraries() {
+        let c = compiler();
+        let commands = c.link_command_with_flags(
+            &[PathBuf::from("main.o")],
+            &PathBuf::from("app"),
+            false,
+            false,
+            false,
+            &["dl".to_string()],
+            &["-framework".to_string(), "Cocoa".to_string()],
+        );
+        assert_eq!(
+            &commands[0].args[commands[0].args.len() - 2..],
+            ["-framework", "Cocoa"].as_slice()
+        );
+        assert!(commands[0].args.contains(&"-ldl".to_string()));
     }
 }

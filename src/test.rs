@@ -35,21 +35,6 @@ pub fn collect_test_sources(root: &Path) -> Result<Vec<PathBuf>> {
             root.display()
         )));
     }
-    // Enforce single-language per test suite (same as package)
-    let mut c_seen = false;
-    let mut cpp_seen = false;
-    for p in &out {
-        match Language::from_extension(p) {
-            Some(Language::C) => c_seen = true,
-            Some(Language::Cpp) => cpp_seen = true,
-            _ => {}
-        }
-    }
-    if c_seen && cpp_seen {
-        return Err(CbldError::LayoutViolation(
-            "test suite mixes C and C++ sources — split or filter with include/exclude".into(),
-        ));
-    }
     Ok(out)
 }
 
@@ -315,12 +300,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_c_and_cpp() {
+    fn accepts_mixed_c_and_cpp() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_file(&root.join("tests/a.cpp"), "int main(){return 0;}");
         write_file(&root.join("tests/b.c"), "int main(){return 0;}");
-        assert!(collect_test_sources(root).is_err());
+        assert_eq!(collect_test_sources(root).unwrap().len(), 2);
     }
 
     #[test]

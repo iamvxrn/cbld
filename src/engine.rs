@@ -118,7 +118,6 @@ pub struct Layout {
     /// `kind`-driven package whose sources are arbitrarily named.
     #[allow(dead_code)]
     pub entry: Option<PathBuf>,
-    pub entry_language: Language,
     pub crate_kind: Crate,
     /// Scan globs carried from `ScanConfig` so `collect_sources` filters the
     /// tree exactly the way discovery did.
@@ -147,7 +146,6 @@ impl Layout {
                 root: root.to_path_buf(),
                 src: root.join(&cfg.source_dir),
                 entry: None,
-                entry_language: Language::Cpp,
                 crate_kind: Crate::Header,
                 include: cfg.include.clone(),
                 exclude: cfg.exclude.clone(),
@@ -171,8 +169,8 @@ impl Layout {
             None
         };
 
-        let (entry, crate_kind, entry_language) = match canonical {
-            Some((entry, kind, lang)) => (Some(entry), kind, lang),
+        let (entry, crate_kind) = match canonical {
+            Some((entry, kind, _)) => (Some(entry), kind),
             None => {
                 // No canonical entry: the kind must be declared, and the
                 // language is inferred from whatever sources the scan finds.
@@ -185,8 +183,8 @@ impl Layout {
                         sd = cfg.source_dir
                     ))
                 })?;
-                let lang = infer_language(&src, &cfg.include, &cfg.exclude)?;
-                (None, kind, lang)
+                ensure_sources(&src, &cfg.include, &cfg.exclude)?;
+                (None, kind)
             }
         };
 
@@ -194,7 +192,6 @@ impl Layout {
             root: root.to_path_buf(),
             src,
             entry,
-            entry_language,
             crate_kind,
             include: cfg.include.clone(),
             exclude: cfg.exclude.clone(),
@@ -216,39 +213,10 @@ impl Layout {
     }
 
     /// Gather every compilable translation unit under `source_dir`, honoring
-    /// the `include`/`exclude` globs and the strict single-language rule: the
-    /// package's language dictates which sources are eligible, and finding the
-    /// *other* language is an error. A cbld package is single-language.
+    /// `include`/`exclude`. C and C++ sources may coexist; each is compiled by
+    /// its matching driver and profile.
     pub fn collect_sources(&self) -> Result<Vec<PathBuf>> {
-        let scanned = scan_sources(&self.src, &self.include, &self.exclude)?;
-
-        let mut sources = Vec::new();
-        let mut foreign = Vec::new();
-        for path in scanned {
-            match Language::from_extension(&path) {
-                Some(l) if l == self.entry_language => sources.push(path),
-                Some(_) => foreign.push(path),
-                None => {}
-            }
-        }
-
-        if !foreign.is_empty() {
-            let other = match self.entry_language {
-                Language::C => "C++",
-                Language::Cpp => "C",
-            };
-            return Err(CbldError::LayoutViolation(format!(
-                "strict C/C++ separation violated: this is a {} package but found \
-                 {} {} source file(s) (e.g. '{}'). A cbld package is single-language.",
-                self.entry_language.label(),
-                foreign.len(),
-                other,
-                foreign[0].display()
-            )));
-        }
-
-        sources.sort();
-        Ok(sources)
+        scan_sources(&self.src, &self.include, &self.exclude)
     }
 
     /// Sources plus public headers (`include/` and any headers under
@@ -330,34 +298,16 @@ fn find_canonical_entry(src: &Path) -> Option<(PathBuf, Crate, Language)> {
     None
 }
 
-/// Determine a `kind`-driven package's language from its (glob-filtered)
-/// sources. Exactly one language must be present; both is a single-language
-/// violation, and none is a "nothing to build" error.
-fn infer_language(src: &Path, include: &[String], exclude: &[String]) -> Result<Language> {
+/// Ensure a `kind`-driven package has at least one source after filtering.
+fn ensure_sources(src: &Path, include: &[String], exclude: &[String]) -> Result<()> {
     let scanned = scan_sources(src, include, exclude)?;
-    let mut c_file = None;
-    let mut cpp_file = None;
-    for path in &scanned {
-        match Language::from_extension(path) {
-            Some(Language::C) => c_file.get_or_insert(path.clone()),
-            Some(Language::Cpp) => cpp_file.get_or_insert(path.clone()),
-            None => continue,
-        };
-    }
-    match (c_file, cpp_file) {
-        (Some(_), Some(cpp)) => Err(CbldError::LayoutViolation(format!(
-            "strict C/C++ separation violated: this package mixes C and C++ sources \
-             (e.g. '{}'). A cbld package is single-language — split it, or narrow the \
-             scan with [package] include/exclude.",
-            cpp.display()
-        ))),
-        (Some(_), None) => Ok(Language::C),
-        (None, Some(_)) => Ok(Language::Cpp),
-        (None, None) => Err(CbldError::LayoutViolation(format!(
+    if scanned.is_empty() {
+        return Err(CbldError::LayoutViolation(format!(
             "no compilable C/C++ sources found under {} (after include/exclude filters)",
             src.display()
-        ))),
+        )));
     }
+    Ok(())
 }
 
 /// Recursively collect every recognized C/C++ source under `src`, honoring the
@@ -439,6 +389,8 @@ pub struct BuildDest<'a> {
     pub target_dir: &'a Path,
     pub output_name: Option<&'a str>,
     pub release: bool,
+    /// Select the C++ linker when a static dependency contains C++ objects.
+    pub dependency_has_cpp: bool,
 }
 
 /// Top-level build orchestrator.
@@ -564,12 +516,21 @@ impl Engine {
         // byte-identical build (same sources, same flags, same target) has
         // already been cached globally under ~/.cbld/cache/prebuilt/{hash}.
         let cache_key = if layout.crate_kind == Crate::Library && !module_graph.has_modules {
-            let fingerprint = compiler.cache_fingerprint(layout.entry_language)?;
+            let languages: Vec<Language> = sources
+                .iter()
+                .filter_map(|source| Language::from_extension(source))
+                .collect();
+            let fingerprint = compiler.cache_fingerprint_for(&languages)?;
             let mut cache_files = sources.clone();
             cache_files.extend(scan_headers(&layout.src, &layout.include, &layout.exclude)?);
             let include_dir = layout.root.join("include");
             if include_dir.is_dir() {
                 cache_files.extend(scan_headers(&include_dir, &[], &[])?);
+            }
+            for generated_dir in compiler.priority_include_dirs() {
+                if generated_dir.is_dir() {
+                    cache_files.extend(scan_headers(generated_dir, &[], &[])?);
+                }
             }
             cache_files.sort();
             cache_files.dedup();
@@ -699,13 +660,14 @@ impl Engine {
         if layout.crate_kind == Crate::Executable || layout.crate_kind == Crate::Shared {
             link_inputs.extend(dep_archives.iter().cloned());
         }
-        let link = compiler.link_command(
+        let link = compiler.link_command_with_flags(
             &link_inputs,
             &artifact,
-            has_cpp,
+            has_cpp || dest.dependency_has_cpp,
             layout.crate_kind == Crate::Library,
             layout.crate_kind == Crate::Shared,
             &package.libs,
+            &package.link_flags,
         );
         self.run_link(&link, layout.crate_kind)?;
 
@@ -1522,6 +1484,9 @@ mod tests {
             include_dirs: Vec::new(),
             defines: Vec::new(),
             libs: Vec::new(),
+            link_flags: Vec::new(),
+            generated_headers: Vec::new(),
+            generate: Vec::new(),
             pkg_config: Vec::new(),
             ignore_warnings: false,
             kind: None,
@@ -1547,7 +1512,6 @@ mod tests {
         // Pointed at the real directory -> discovered as an executable.
         let layout = Layout::discover(&tmp, &ScanConfig::strict("legacy")).unwrap();
         assert_eq!(layout.crate_kind, Crate::Executable);
-        assert_eq!(layout.entry_language, Language::C);
 
         fs::remove_dir_all(&tmp).ok();
     }
@@ -1564,7 +1528,6 @@ mod tests {
 
         let layout = Layout::discover(&tmp, &ScanConfig::strict("src")).unwrap();
         assert_eq!(layout.crate_kind, Crate::Executable);
-        assert_eq!(layout.entry_language, Language::Cpp);
         assert_eq!(layout.entry.unwrap().file_name().unwrap(), "main.C");
 
         fs::remove_dir_all(&tmp).ok();
@@ -1592,11 +1555,30 @@ mod tests {
         };
         let layout = Layout::discover(&tmp, &cfg).unwrap();
         assert_eq!(layout.crate_kind, Crate::Library);
-        assert_eq!(layout.entry_language, Language::C);
         assert!(layout.entry.is_none());
         assert_eq!(layout.collect_sources().unwrap().len(), 2);
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn kind_lib_accepts_mixed_c_and_cpp_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("bridge.c"), "int bridge(void) { return 1; }\n").unwrap();
+        fs::write(src.join("api.cpp"), "int api() { return 2; }\n").unwrap();
+
+        let layout = Layout::discover(
+            tmp.path(),
+            &ScanConfig {
+                source_dir: "src".to_string(),
+                kind: Some(Crate::Library),
+                ..ScanConfig::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(layout.collect_sources().unwrap().len(), 2);
     }
 
     /// Header-only packages do not need a source directory: there is nothing
@@ -1704,6 +1686,7 @@ mod tests {
             target_dir: &target_dir,
             output_name: None,
             release: false,
+            dependency_has_cpp: false,
         };
 
         let first = engine
@@ -1727,6 +1710,7 @@ mod tests {
                     target_dir: &target_dir,
                     output_name: None,
                     release: false,
+                    dependency_has_cpp: false,
                 },
                 &[],
             )
@@ -1745,8 +1729,8 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
-    /// Dependency archives must actually reach the executable link line.
-    /// Header-only deps are a no-op here; compiled libs (cJSON, fmt) are not.
+    /// Dependency archives must reach the executable link line, and a C root
+    /// must select the C++ linker for a dependency containing C++ objects.
     #[test]
     fn executable_links_dependency_archives() {
         if Command::new("clang").arg("--version").output().is_err() {
@@ -1768,7 +1752,14 @@ mod tests {
         fs::create_dir_all(&lib_root).unwrap();
         fs::create_dir_all(exe_root.join("src")).unwrap();
 
-        let (lib_layout, lib_pkg) = make_library_package(&lib_root, "add");
+        let (_, lib_pkg) = make_library_package(&lib_root, "add");
+        fs::remove_file(lib_root.join("src/lib.c")).unwrap();
+        fs::write(
+            lib_root.join("src/lib.cpp"),
+            "extern \"C\" int cbld_add(int a, int b) { return a + b; }\n",
+        )
+        .unwrap();
+        let lib_layout = Layout::discover(&lib_root, &ScanConfig::strict("src")).unwrap();
         let lib_compiler = Compiler::new(
             CProfile::default(),
             CppProfile::default(),
@@ -1792,6 +1783,7 @@ mod tests {
                     target_dir: &lib_target,
                     output_name: None,
                     release: false,
+                    dependency_has_cpp: false,
                 },
                 &[],
             )
@@ -1815,6 +1807,9 @@ mod tests {
             include_dirs: Vec::new(),
             defines: Vec::new(),
             libs: Vec::new(),
+            link_flags: Vec::new(),
+            generated_headers: Vec::new(),
+            generate: Vec::new(),
             pkg_config: Vec::new(),
             ignore_warnings: false,
             kind: None,
@@ -1843,6 +1838,7 @@ mod tests {
                     target_dir: &exe_target,
                     output_name: None,
                     release: false,
+                    dependency_has_cpp: true,
                 },
                 std::slice::from_ref(&lib_built.path),
             )

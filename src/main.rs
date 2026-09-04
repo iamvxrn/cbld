@@ -25,7 +25,7 @@ mod test;
 mod trace;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
@@ -106,13 +106,16 @@ struct TargetConfig {
     sysroot: Option<PathBuf>,
 }
 
-/// Include dirs, archives, cache hits, and compile-commands entries from
+/// Include dirs, archives, link inputs, cache hits, and compile-commands entries from
 /// building the resolved dependency graph. A named struct so clippy doesn't
 /// trip on the four-tuple return of `build_dependencies`.
 struct DepArtifacts {
     includes: Vec<PathBuf>,
     archives: Vec<PathBuf>,
     pkg_libs: Vec<String>,
+    link_flags: Vec<String>,
+    cflags: Vec<String>,
+    has_cpp: bool,
     cache_hits: usize,
     compile_commands: Vec<compdb::CompileCommandEntry>,
 }
@@ -687,6 +690,7 @@ fn build_single(
     // Build dependencies first so their archives/headers exist.
     let target_dir = engine::target_dir(root, target.triple.as_deref());
     let deps = build_dependencies(&resolved, args, verbose, quiet, json, &target, pkg_config)?;
+    let generated_include_dirs = prepare_generated_outputs(&package, root, &target_dir)?;
 
     // --- Compile the root package ----------------------------------------
     let features = manifest.resolve_features(&args.features, args.no_default_features);
@@ -706,10 +710,13 @@ fn build_single(
     let mut pkg_libs = pkg_config.libs(&package.pkg_config, verbose)?;
     pkg_libs.extend(deps.pkg_libs.clone());
     package.libs.extend(pkg_libs);
+    package.link_flags.extend(deps.link_flags.clone());
     let mut c_profile = manifest.profile.c.clone().unwrap_or_default();
     let mut cpp_profile = manifest.profile.cpp.clone().unwrap_or_default();
     c_profile.extra_flags.extend(pkg_cflags.clone());
+    c_profile.extra_flags.extend(deps.cflags.clone());
     cpp_profile.extra_flags.extend(pkg_cflags);
+    cpp_profile.extra_flags.extend(deps.cflags.clone());
 
     let compiler = Compiler::new_with_sysroot(
         c_profile,
@@ -723,7 +730,8 @@ fn build_single(
         target.sysroot,
         package.defines.clone(),
         args.ignore_warnings || package.ignore_warnings,
-    );
+    )
+    .with_priority_include_dirs(generated_include_dirs);
 
     let engine = Engine::new(jobs(args), verbose, quiet, json, args.trace);
     let built = engine.build_package(
@@ -734,6 +742,7 @@ fn build_single(
             target_dir: &target_dir,
             output_name: args.output.as_deref(),
             release: args.release,
+            dependency_has_cpp: deps.has_cpp,
         },
         &deps.archives,
     )?;
@@ -899,6 +908,9 @@ fn build_dependencies(
     let mut includes = Vec::new();
     let mut archives = Vec::new();
     let mut pkg_libs = Vec::new();
+    let mut link_flags = Vec::new();
+    let mut cflags = Vec::new();
+    let mut has_cpp = false;
     let mut cache_hits = 0usize;
     let mut compile_commands = Vec::new();
     let index = PackageIndex::load()?;
@@ -906,12 +918,13 @@ fn build_dependencies(
     for dep in resolved {
         // Overlay recipe if the clone has no cbld.toml; a cbld.toml in the
         // clone always wins.
-        let dep_manifest = index.effective_manifest(
+        let dep_manifest = index.effective_manifest_for_target(
             &dep.cache_path,
             &dep.shorthand,
             &dep.url,
             &dep.name,
             &dep.version,
+            target.triple.as_deref(),
         )?;
         let dep_package = require_package(&dep_manifest, &dep.cache_path)?;
         let dep_scan = scan_config(None, &dep_package)?;
@@ -928,6 +941,10 @@ fn build_dependencies(
             }
             continue;
         }
+
+        has_cpp |= dep_layout.collect_sources()?.iter().any(|source| {
+            compiler::Language::from_extension(source) == Some(compiler::Language::Cpp)
+        });
 
         if !quiet {
             println!(
@@ -946,10 +963,15 @@ fn build_dependencies(
         let dep_pkg_cflags = pkg_config.cflags(&dep_package.pkg_config, verbose)?;
         let dep_pkg_libs = pkg_config.libs(&dep_package.pkg_config, verbose)?;
         pkg_libs.extend(dep_pkg_libs.clone());
+        link_flags.extend(dep_package.link_flags.clone());
+        cflags.extend(dep_pkg_cflags.clone());
         let mut dep_c = dep_manifest.profile.c.clone().unwrap_or_default();
         let mut dep_cpp = dep_manifest.profile.cpp.clone().unwrap_or_default();
         dep_c.extra_flags.extend(dep_pkg_cflags.clone());
         dep_cpp.extra_flags.extend(dep_pkg_cflags);
+        let dep_target = engine::target_dir(&dep.cache_path, target.triple.as_deref());
+        let generated_include_dirs =
+            prepare_generated_outputs(&dep_package, &dep.cache_path, &dep_target)?;
         let dep_compiler = Compiler::new_with_sysroot(
             dep_c,
             dep_cpp,
@@ -962,9 +984,8 @@ fn build_dependencies(
             target.sysroot.clone(),
             dep_package.defines.clone(),
             dep_package.ignore_warnings,
-        );
-
-        let dep_target = engine::target_dir(&dep.cache_path, target.triple.as_deref());
+        )
+        .with_priority_include_dirs(generated_include_dirs);
         let engine = Engine::new(jobs(args), verbose, quiet, json, false);
 
         // Force library output for dependencies even if they expose main.*.
@@ -977,6 +998,7 @@ fn build_dependencies(
                 target_dir: &dep_target,
                 output_name: None,
                 release: args.release,
+                dependency_has_cpp: false,
             },
             &[],
         )?;
@@ -996,9 +1018,125 @@ fn build_dependencies(
         includes,
         archives,
         pkg_libs,
+        link_flags,
+        cflags,
+        has_cpp,
         cache_hits,
         compile_commands,
     })
+}
+
+/// Render generic recipe outputs under the build output. Upstream checkouts
+/// stay read-only, while generated headers participate in compiler flag
+/// fingerprints through their priority include directory.
+fn prepare_generated_outputs(
+    package: &Package,
+    package_root: &Path,
+    target_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    if package.generated_headers.is_empty() && package.generate.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = target_dir.join("generated").join(&package.name);
+    for header in &package.generated_headers {
+        write_generated_file(&root, &header.path, &header.content)?;
+    }
+    for task in &package.generate {
+        match task {
+            manifest::GenerateTask::Write { path, content } => {
+                write_generated_file(&root, path, content)?;
+            }
+            manifest::GenerateTask::Copy { source, path } => {
+                let source = package_root.join(valid_relative_path(source, "generation source")?);
+                if !source.is_file() {
+                    return Err(CbldError::Config(format!(
+                        "generation source '{}' is not a file",
+                        source.display()
+                    )));
+                }
+                let output = generated_output_path(&root, path)?;
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent).path_ctx(parent)?;
+                }
+                std::fs::copy(&source, &output).path_ctx(&output)?;
+            }
+            manifest::GenerateTask::Command {
+                program,
+                args,
+                outputs,
+                env,
+            } => {
+                if outputs.is_empty() {
+                    return Err(CbldError::Config(format!(
+                        "generation command '{program}' must declare at least one output"
+                    )));
+                }
+                let replace = |value: &str| {
+                    value
+                        .replace("{generated_dir}", &root.to_string_lossy())
+                        .replace("{package_root}", &package_root.to_string_lossy())
+                };
+                let output = Command::new(program)
+                    .current_dir(package_root)
+                    .args(args.iter().map(|arg| replace(arg)))
+                    .env("CBLD_GENERATED_DIR", &root)
+                    .envs(env.iter().map(|(key, value)| (key, replace(value))))
+                    .output()
+                    .map_err(|source| CbldError::CommandSpawn {
+                        program: program.clone(),
+                        source,
+                    })?;
+                if !output.status.success() {
+                    return Err(CbldError::CommandFailed {
+                        program: format!("{} {}", program, args.join(" ")),
+                        code: output.status.code(),
+                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    });
+                }
+                for path in outputs {
+                    let output = generated_output_path(&root, path)?;
+                    if !output.is_file() {
+                        return Err(CbldError::Config(format!(
+                            "generation command '{program}' did not create declared output '{}'",
+                            output.display()
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(vec![root])
+}
+
+fn write_generated_file(root: &Path, path: &str, content: &str) -> Result<()> {
+    let output = generated_output_path(root, path)?;
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).path_ctx(parent)?;
+    }
+    std::fs::write(&output, content).path_ctx(&output)
+}
+
+fn generated_output_path(root: &Path, path: &str) -> Result<PathBuf> {
+    Ok(root.join(valid_relative_path(path, "generated output")?))
+}
+
+fn valid_relative_path<'a>(path: &'a str, label: &str) -> Result<&'a Path> {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(CbldError::Config(format!(
+            "{label} path '{}' must be a relative path without parent traversal",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 /// `cbld run`
@@ -1883,6 +2021,45 @@ mod tests {
             },
         );
         manifest
+    }
+
+    #[test]
+    fn generated_headers_stay_in_target_output_and_reject_parent_paths() {
+        let root = temp_dir("generated-headers");
+        let manifest: Manifest = toml::from_str(
+            r##"
+[package]
+name = "generated"
+version = "0.1.0"
+generated_headers = [{ path = "SDL_config.h", content = "#define CBLD_GENERATED 1\n" }]
+generate = [
+  { kind = "write", path = "nested/generated.h", content = "#define TASK_WRITE 1\n" },
+  { kind = "copy", source = "template.h", path = "nested/copied.h" },
+]
+"##,
+        )
+        .unwrap();
+        let package = manifest.package.unwrap();
+        std::fs::write(root.join("template.h"), "#define TASK_COPY 1\n").unwrap();
+        let includes = prepare_generated_outputs(&package, &root, &root).unwrap();
+        assert_eq!(includes, vec![root.join("generated").join("generated")]);
+        assert_eq!(
+            std::fs::read_to_string(includes[0].join("SDL_config.h")).unwrap(),
+            "#define CBLD_GENERATED 1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(includes[0].join("nested/generated.h")).unwrap(),
+            "#define TASK_WRITE 1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(includes[0].join("nested/copied.h")).unwrap(),
+            "#define TASK_COPY 1\n"
+        );
+
+        let mut invalid = package.clone();
+        invalid.generated_headers[0].path = "../escape.h".to_string();
+        assert!(prepare_generated_outputs(&invalid, &root, &root).is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
