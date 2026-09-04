@@ -27,6 +27,8 @@ It has no package-specific tools or CMake/b2 adapter logic.
 
 Resolution walks each dependency's effective manifest (clone or overlay) and compiles transitives first. Versions are git tags; `cbld.lock` pins commit SHAs.
 
+Include paths inherit down that same order: a dependency is compiled with its own include dirs plus everything the dependencies compiled before it (in `resolved`'s topological order) exposed, so a package can `#include` headers from something it depends on two levels down, not only its direct dependency.
+
 `[target.<triple>]` presets provide an existing package-relative `sysroot`.
 The selected `--target` or `[package] target` is propagated to dependency
 compilation and linking. Cross-target outputs are isolated under
@@ -39,6 +41,8 @@ compilation and linking. Cross-target outputs are isolated under
 ## Build cache
 
 Only **static libraries** go in `~/.cbld/cache/prebuilt/{hash}/`. The hash covers sources, compiler flags, and host OS/arch. Executables are project-specific and are not cached globally.
+
+Within one build, object files are recompiled based on more than their source's mtime: the resolved compiler flags for the package are stamped beside the objects (`.cbld-fingerprint`) and compared on every build, so editing `[profile.*]`, `[package] defines`, `--features`, or `--ignore-warnings` triggers a full recompile even though none of those touch a source file's timestamp.
 
 cbld home is `$CBLD_HOME`, else `$HOME/.cbld`, else `%USERPROFILE%\.cbld` on Windows.
 

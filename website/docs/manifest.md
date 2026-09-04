@@ -41,7 +41,7 @@ sysroot = "toolchains/aarch64-sysroot"
 | `source_dir` | Source scan root (default `src`) |
 | `include_dirs` | Extra `-I` paths relative to package root |
 | `defines` | Project-wide `-D` defines for C and C++ |
-| `libs` | System libraries passed as `-l` when linking an executable (`pthread`, `m`, …) |
+| `libs` | System libraries passed as `-l`; propagates to consumers the way `pkg_config` results do, since a dependency is archived and an archiver takes no `-l` flags -- the requirement can only be satisfied at the consumer's link (`pthread`, `m`, …) |
 | `link_flags` | Raw ordered linker arguments, e.g. `-framework`, `Cocoa`, or `-Wl,...` |
 | `pkg_config` | Packages queried for compile and link flags; dependency results propagate to consumers |
 | `ignore_warnings` | Inject `-w` for all translation units |
