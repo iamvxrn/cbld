@@ -9,7 +9,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::compiler::Compiler;
+use crate::compiler::{Compiler, Language};
 use crate::engine::Layout;
 use crate::error::{CbldError, Result};
 
@@ -31,15 +31,6 @@ pub fn run(
     let bin = require_clang_tidy()?;
     let use_default_checks = !layout.root.join(".clang-tidy").is_file();
     let header_filter = regex_escape(&layout.root.to_string_lossy().replace('\\', "/"));
-    let frontend = compiler.tidy_frontend_args(layout.entry_language);
-    let args = lint_invocation(
-        &files,
-        deny_warnings,
-        use_default_checks,
-        &header_filter,
-        &frontend,
-    );
-
     if !quiet {
         println!(
             "\x1b[1;36m     Linting\x1b[0m {} file{}",
@@ -47,36 +38,61 @@ pub fn run(
             if files.len() == 1 { "" } else { "s" }
         );
     }
-    if verbose {
-        eprintln!("  \x1b[2m[lint]\x1b[0m {bin} {}", args.join(" "));
-    }
-
-    let status =
-        Command::new(&bin)
-            .args(&args)
-            .status()
-            .map_err(|source| CbldError::CommandSpawn {
-                program: bin.clone(),
-                source,
-            })?;
-
-    if status.success() {
-        if !quiet {
-            println!(
-                "\x1b[1;32m    Finished\x1b[0m {} file{}",
-                files.len(),
-                if files.len() == 1 { "" } else { "s" }
-            );
+    let (c_files, cpp_files) = split_files_by_language(&files);
+    for (language, files) in [(Language::C, c_files), (Language::Cpp, cpp_files)] {
+        if files.is_empty() {
+            continue;
         }
-        return Ok(());
+        let frontend = compiler.tidy_frontend_args(language);
+        let args = lint_invocation(
+            &files,
+            deny_warnings,
+            use_default_checks,
+            &header_filter,
+            &frontend,
+        );
+        if verbose {
+            eprintln!("  \x1b[2m[lint]\x1b[0m {bin} {}", args.join(" "));
+        }
+        let status =
+            Command::new(&bin)
+                .args(&args)
+                .status()
+                .map_err(|source| CbldError::CommandSpawn {
+                    program: bin.clone(),
+                    source,
+                })?;
+        if !status.success() {
+            return Err(CbldError::Lint);
+        }
     }
+    if !quiet {
+        println!(
+            "\x1b[1;32m    Finished\x1b[0m {} file{}",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
 
-    if deny_warnings {
-        return Err(CbldError::Lint);
+fn split_files_by_language(files: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let has_cpp = files
+        .iter()
+        .any(|file| Language::from_extension(file) == Some(Language::Cpp));
+    let mut c_files = Vec::new();
+    let mut cpp_files = Vec::new();
+    for file in files {
+        match Language::from_extension(file) {
+            Some(Language::C) => c_files.push(file.clone()),
+            Some(Language::Cpp) => cpp_files.push(file.clone()),
+            // Headers do not encode their language reliably. In a mixed
+            // package, prefer C++ so C++-only declarations parse correctly.
+            None if has_cpp => cpp_files.push(file.clone()),
+            None => c_files.push(file.clone()),
+        }
     }
-    // Without `--deny-warnings`, a non-zero tidy exit is still a failure:
-    // it means a file could not be parsed, not merely that lints fired.
-    Err(CbldError::Lint)
+    (c_files, cpp_files)
 }
 
 pub(crate) fn lint_invocation(
@@ -153,6 +169,20 @@ mod tests {
     #[test]
     fn regex_escape_dots_in_paths() {
         assert_eq!(regex_escape("/home/a.b/c"), "/home/a\\.b/c");
+    }
+
+    #[test]
+    fn mixed_sources_use_the_matching_frontend_and_cpp_for_headers() {
+        let (c, cpp) = split_files_by_language(&[
+            PathBuf::from("src/a.c"),
+            PathBuf::from("src/b.cpp"),
+            PathBuf::from("include/api.h"),
+        ]);
+        assert_eq!(c, vec![PathBuf::from("src/a.c")]);
+        assert_eq!(
+            cpp,
+            vec![PathBuf::from("src/b.cpp"), PathBuf::from("include/api.h")]
+        );
     }
 
     #[test]

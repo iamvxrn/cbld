@@ -167,7 +167,6 @@ impl Resolver {
 
         // Ensure the repository is present in the cache at the requested tag.
         self.ensure_cached(&url, &tag, &dest)?;
-
         // Determine the SHA: trust the lock if present, else read from the
         // freshly checked-out tree.
         let checksum = match locked {
@@ -179,6 +178,13 @@ impl Resolver {
             }
             _ => self.head_sha(&dest)?,
         };
+        if self
+            .index
+            .get(shorthand)
+            .is_some_and(|recipe| recipe.submodules)
+        {
+            self.update_submodules(&dest)?;
+        }
 
         // Read the dependency's own (or overlay) manifest to discover
         // transitive edges.
@@ -317,6 +323,14 @@ impl Resolver {
             "none of the tags {candidates:?} exist in {url} \
              (requested version '{version}') — check the version in your manifest"
         )))
+    }
+
+    /// Materialize the exact submodule graph recorded by the checked-out
+    /// superproject commit. This is part of the pinned source tree, not a
+    /// separate package-manager resolution step.
+    fn update_submodules(&self, dest: &Path) -> Result<()> {
+        self.log(&format!("updating submodules in {}", dest.display()));
+        self.git(dest, &["submodule", "update", "--init", "--recursive"])
     }
 
     /// `git checkout <tag>` inside a repository.

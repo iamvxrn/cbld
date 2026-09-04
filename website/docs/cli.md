@@ -57,8 +57,9 @@ cbld fmt --check
 
 Discover, compile, link, and run a test executable. Test sources are collected
 from `tests/`, `test/`, `src/tests/`, `src/test_*`, and `src/*_test.*`.
-The suite must use one language, either C or C++. If the package is a library,
-its artifact is built first and linked into the test executable.
+Suites may mix C and C++ sources; each translation unit uses its matching
+compiler driver and a C++ link driver is selected when needed. If the package
+is a library, its artifact is built first and linked into the test executable.
 
 ```bash
 cbld test

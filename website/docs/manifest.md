@@ -42,9 +42,15 @@ sysroot = "toolchains/aarch64-sysroot"
 | `include_dirs` | Extra `-I` paths relative to package root |
 | `defines` | Project-wide `-D` defines for C and C++ |
 | `libs` | System libraries passed as `-l` when linking an executable (`pthread`, `m`, …) |
+| `link_flags` | Raw ordered linker arguments, e.g. `-framework`, `Cocoa`, or `-Wl,...` |
+| `pkg_config` | Packages queried for compile and link flags; dependency results propagate to consumers |
 | `ignore_warnings` | Inject `-w` for all translation units |
 | `kind` | `bin` / `lib` when the entry file name does not imply the artifact type; `header` for include-only (no archive) |
 | `include` / `exclude` | Glob patterns to narrow the source scan |
+
+One package may contain both C and C++ translation units. cbld applies
+`[profile.c]` or `[profile.cpp]` to each matching source, then uses the C++
+driver for the final link whenever C++ is present.
 
 ## Target presets
 
@@ -63,6 +69,62 @@ sysroot = "toolchains/aarch64-sysroot"
 Cross-target artifacts are isolated under `target/<triple>/debug` or
 `target/<triple>/release`. `cbld run`, `cbld test`, and `cbld bench` refuse to
 execute a cross-compiled binary on the host.
+
+## Native Package Recipes
+
+Registry recipes can extend a base upstream layout with target-family sections:
+`linux`, `macos`, and `windows`. A selected section adds source globs, public
+include paths, defines, `pkg_config` packages, `libs`, and ordered
+`link_flags`; `source_dir` and `kind` replace their base values. This keeps
+platform build graphs in cbld instead of delegating to CMake or another build
+tool.
+
+```toml
+["gh:example/library"]
+kind = "lib"
+source_dir = "."
+include = ["src/common/**/*.c"]
+
+["gh:example/library".platform.macos]
+include = ["src/macos/**/*.c"]
+link_flags = ["-framework", "Cocoa"]
+```
+
+Recipes may also set `submodules = true`. cbld then initializes the recursive
+submodule graph at the lockfile-pinned superproject commit before scanning its
+sources.
+
+## Generation Tasks
+
+`[[package.generate]]` is an ordered, generic pre-build task list. Its outputs
+are written below `target/.../generated/<package>/`, placed before upstream
+headers on the include path, and included in a static-library cache key. The
+upstream checkout is never modified.
+
+```toml
+[[package.generate]]
+kind = "write"
+path = "config/project.h"
+content = "#define PROJECT_ENABLED 1\n"
+
+[[package.generate]]
+kind = "copy"
+source = "templates/config.h"
+path = "config/copied.h"
+
+[[package.generate]]
+kind = "command"
+program = "my-generator"
+args = ["--out", "{generated_dir}/generated.h"]
+outputs = ["generated.h"]
+env = { PROJECT_ROOT = "{package_root}" }
+```
+
+Commands run from the package root. `{package_root}` and `{generated_dir}` are
+expanded in command arguments and environment values; `CBLD_GENERATED_DIR` is
+also set. Every command must declare at least one output, and every path must
+stay relative to its appropriate package or generated output root; output paths
+cannot escape the generated output directory.
 
 ## C++20 modules
 

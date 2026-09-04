@@ -48,31 +48,23 @@ pub fn run(args: &MigrateArgs, quiet: bool) -> Result<()> {
         );
         project.print_notices();
     }
-    // Mixed-language fallout is always reported, even under --quiet: it lists
-    // exactly what the migration could NOT map automatically, which is the
-    // one thing a user re-running this non-interactively still needs to see.
-    project.print_unmapped_warning();
     Ok(())
 }
 
 /// Everything the naive parser managed to extract from a CMakeLists.txt.
 ///
-/// `cbld migrate` must never abort on a mixed-language project — CMake places
-/// no single-language restriction on a target, but cbld does. Rather than
-/// erroring out, the parser picks the dominant language by source count and
-/// quarantines the minority-language files into `conflicting_sources`,
-/// leaving them as explicit TODOs instead of a hard failure.
+/// Mixed C/C++ targets are native to cbld. The migrator still records a
+/// dominant language solely to choose a familiar suggested entry-point name.
 #[derive(Default)]
 struct CMakeProject {
     name: Option<String>,
     is_library: bool,
     /// Dominant language: true if C "wins" the source-count majority.
     is_c: bool,
-    /// Sources matching the dominant language — these go into the strict
-    /// layout entry file.
+    /// Every source discovered in CMake target declarations.
     sources: Vec<String>,
-    /// Sources of the *other* language, excluded from migration outright.
-    conflicting_sources: Vec<String>,
+    /// Whether both C and C++ sources were discovered.
+    mixed: bool,
     include_dirs: Vec<String>,
     link_libs: Vec<String>,
     complex_hits: Vec<String>,
@@ -118,16 +110,12 @@ impl CMakeProject {
 
         out.push_str("[features]\ndefault = []\n\n");
 
-        let profile_key = if self.is_c { "c" } else { "cpp" };
-        out.push_str(&format!("[profile.{profile_key}]\n"));
-        out.push_str(if self.is_c {
-            "standard = \"c17\"\n"
-        } else {
-            "standard = \"c++20\"\n"
-        });
-        out.push_str("warnings = [\"all\", \"extra\"]\n");
-        out.push_str("optimization = \"0\"\n");
-        out.push('\n');
+        if self.is_c || self.mixed {
+            out.push_str("[profile.c]\nstandard = \"c17\"\nwarnings = [\"all\", \"extra\"]\noptimization = \"0\"\n\n");
+        }
+        if !self.is_c || self.mixed {
+            out.push_str("[profile.cpp]\nstandard = \"c++20\"\nwarnings = [\"all\", \"extra\"]\noptimization = \"0\"\n\n");
+        }
 
         out.push_str("[dependencies]\n");
         let other_libs: Vec<&String> = self
@@ -147,18 +135,8 @@ impl CMakeProject {
             }
         }
 
-        if !self.conflicting_sources.is_empty() {
-            let dominant = if self.is_c { "C" } else { "C++" };
-            let other = if self.is_c { "C++" } else { "C" };
-            out.push_str("\n# TODO: Manually resolve mixed-language translation units\n");
-            out.push_str(&format!(
-                "# cbld enforces one language per package; {dominant} was chosen as the\n\
-                 # dominant language by source count. These {other} source(s) were excluded\n\
-                 # from this migration and need a plan (e.g. a sibling cbld package):\n"
-            ));
-            for s in &self.conflicting_sources {
-                out.push_str(&format!("#   - {s}\n"));
-            }
+        if self.mixed {
+            out.push_str("\n# This target mixes C and C++; cbld compiles each source with its matching profile.\n");
         }
 
         out
@@ -186,29 +164,6 @@ impl CMakeProject {
                  ({}). Review the file manually for logic not captured above.",
                 self.complex_hits.join(", ")
             );
-        }
-    }
-
-    /// Report — to stderr, unconditionally — exactly which detected source
-    /// files could not be folded into the generated manifest because they
-    /// conflict with cbld's single-language rule. This is the migration
-    /// tool's "never crash, always tell the user what's left" guarantee.
-    fn print_unmapped_warning(&self) {
-        if self.conflicting_sources.is_empty() {
-            return;
-        }
-        let dominant = if self.is_c { "C" } else { "C++" };
-        let other = if self.is_c { "C++" } else { "C" };
-        eprintln!(
-            "\x1b[1;33mwarning\x1b[0m: mixed-language CMake project detected — {dominant} was \
-             chosen as the dominant language ({} {dominant} vs. {} {other} source file(s)). \
-             The following {other} file(s) could not be mapped automatically and were left as \
-             TODOs in cbld.toml:",
-            self.sources.len(),
-            self.conflicting_sources.len()
-        );
-        for s in &self.conflicting_sources {
-            eprintln!("           - {s}");
         }
     }
 }
@@ -357,20 +312,13 @@ fn parse_cmake(raw: &str) -> CMakeProject {
     project.link_libs.sort();
     project.link_libs.dedup();
 
-    // Pick the dominant language by source count rather than erroring out on
-    // a mix — CMake permits mixed-language targets even though cbld doesn't.
-    // Ties favor C++, matching `cbld init`'s own default.
+    // Pick the dominant language only for migration hints. Ties favor C++,
+    // matching `cbld init`'s own default; mixed targets remain intact.
     let cpp_count = project.sources.iter().filter(|s| is_cpp_source(s)).count();
     let c_count = project.sources.len() - cpp_count;
     project.is_c = c_count > cpp_count;
 
-    let dominant_is_cpp = !project.is_c;
-    let all_sources = std::mem::take(&mut project.sources);
-    let (dominant, conflicting): (Vec<String>, Vec<String>) = all_sources
-        .into_iter()
-        .partition(|s| is_cpp_source(s) == dominant_is_cpp);
-    project.sources = dominant;
-    project.conflicting_sources = conflicting;
+    project.mixed = cpp_count > 0 && c_count > 0;
 
     let lower = text.to_ascii_lowercase();
     for keyword in [
@@ -394,10 +342,8 @@ fn parse_cmake(raw: &str) -> CMakeProject {
 mod tests {
     use super::*;
 
-    /// A mock mixed-language `add_executable` call: 3 C++ sources vs. 2 C
-    /// sources. C++ must win the majority, the 2 C files must be quarantined
-    /// into `conflicting_sources`, and parsing must complete without
-    /// panicking.
+    /// A mock mixed-language `add_executable` call: 3 C++ sources and 2 C
+    /// sources. The full set must be retained by the migration model.
     const MIXED_LANGUAGE_CMAKE: &str = r#"
         project(widgets)
         add_executable(widgets main.cpp foo.c bar.cpp baz.c qux.cpp)
@@ -406,34 +352,25 @@ mod tests {
     "#;
 
     #[test]
-    fn dominant_language_picked_by_majority_source_count() {
+    fn mixed_language_sources_are_retained() {
         let project = parse_cmake(MIXED_LANGUAGE_CMAKE);
 
         // 3 C++ vs. 2 C: C++ is dominant, so `is_c` must be false.
         assert!(!project.is_c);
-        assert_eq!(project.sources.len(), 3);
-        assert_eq!(project.conflicting_sources.len(), 2);
-
-        for s in &project.sources {
-            assert!(is_cpp_source(s), "expected dominant cpp source, got {s}");
-        }
-        for s in &project.conflicting_sources {
-            assert!(!is_cpp_source(s), "expected minority c source, got {s}");
-        }
+        assert!(project.mixed);
+        assert_eq!(project.sources.len(), 5);
+        assert!(project.sources.iter().any(|s| s == "foo.c"));
+        assert!(project.sources.iter().any(|s| s == "main.cpp"));
     }
 
     #[test]
-    fn minority_sources_become_a_todo_comment_block() {
+    fn mixed_sources_emit_both_profiles_without_a_todo() {
         let project = parse_cmake(MIXED_LANGUAGE_CMAKE);
         let manifest = project.render_manifest();
 
-        assert!(manifest.contains("# TODO: Manually resolve mixed-language translation units"));
-        for s in &project.conflicting_sources {
-            assert!(
-                manifest.contains(&format!("#   - {s}")),
-                "manifest missing TODO line for {s}:\n{manifest}"
-            );
-        }
+        assert!(manifest.contains("# This target mixes C and C++"));
+        assert!(manifest.contains("[profile.c]"));
+        assert!(manifest.contains("[profile.cpp]"));
         assert!(manifest.contains("[package]"));
         assert!(manifest.contains("include_dirs = [\"include\"]"));
         assert!(manifest.contains("libs = [\"pthread\"]"));
@@ -442,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn single_language_project_has_no_conflicting_sources() {
+    fn single_language_project_does_not_enable_mixed_profiles() {
         let text = r#"
             project(tool)
             add_executable(tool main.c util.c)
@@ -451,10 +388,11 @@ mod tests {
 
         assert!(project.is_c);
         assert_eq!(project.sources.len(), 2);
-        assert!(project.conflicting_sources.is_empty());
+        assert!(!project.mixed);
 
         let manifest = project.render_manifest();
-        assert!(!manifest.contains("# TODO: Manually resolve mixed-language translation units"));
+        assert!(!manifest.contains("# This target mixes C and C++"));
+        assert!(!manifest.contains("[profile.cpp]"));
     }
 
     #[test]
@@ -476,12 +414,10 @@ mod tests {
     fn reporting_helpers_do_not_panic_on_mixed_or_clean_input() {
         let mixed = parse_cmake(MIXED_LANGUAGE_CMAKE);
         mixed.print_notices();
-        mixed.print_unmapped_warning();
         let _ = mixed.render_manifest();
 
         let clean = parse_cmake("project(empty)");
         clean.print_notices();
-        clean.print_unmapped_warning();
         let _ = clean.render_manifest();
     }
 }

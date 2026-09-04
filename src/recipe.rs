@@ -12,7 +12,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::{CbldError, IoPathExt, Result};
-use crate::manifest::{Manifest, Package};
+use crate::manifest::{GenerateTask, GeneratedHeader, Manifest, Package};
 use crate::resolver;
 
 const BUILTIN: &str = include_str!("../registry/cbld-libs.toml");
@@ -38,6 +38,52 @@ pub struct Recipe {
     #[serde(default)]
     pub defines: Vec<String>,
     #[serde(default)]
+    pub libs: Vec<String>,
+    #[serde(default)]
+    pub link_flags: Vec<String>,
+    #[serde(default)]
+    pub pkg_config: Vec<String>,
+    #[serde(default)]
+    pub generated_headers: Vec<GeneratedHeader>,
+    #[serde(default)]
+    pub generate: Vec<GenerateTask>,
+    /// Materialize upstream git submodules after checking out the pinned tag.
+    #[serde(default)]
+    pub submodules: bool,
+    #[serde(default)]
+    pub ignore_warnings: bool,
+    /// Target-family patches keyed by `linux`, `macos`, or `windows`.
+    #[serde(default)]
+    pub platform: BTreeMap<String, RecipePatch>,
+}
+
+/// Target-specific additions to an overlay recipe. Vectors extend the base
+/// recipe; `kind` and `source_dir` replace their base values when present.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct RecipePatch {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub source_dir: Option<String>,
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    #[serde(default)]
+    pub defines: Vec<String>,
+    #[serde(default)]
+    pub libs: Vec<String>,
+    #[serde(default)]
+    pub link_flags: Vec<String>,
+    #[serde(default)]
+    pub pkg_config: Vec<String>,
+    #[serde(default)]
+    pub generated_headers: Vec<GeneratedHeader>,
+    #[serde(default)]
+    pub generate: Vec<GenerateTask>,
+    #[serde(default)]
     pub ignore_warnings: bool,
 }
 
@@ -51,11 +97,32 @@ impl Recipe {
             || !self.include.is_empty()
             || !self.exclude.is_empty()
             || !self.defines.is_empty()
+            || !self.libs.is_empty()
+            || !self.link_flags.is_empty()
+            || !self.pkg_config.is_empty()
+            || !self.generated_headers.is_empty()
+            || !self.generate.is_empty()
+            || self.submodules
             || self.ignore_warnings
+            || !self.platform.is_empty()
     }
 
-    /// Materialize a synthetic manifest for an overlay checkout.
-    pub fn to_manifest(&self, name: &str, version: &str) -> Manifest {
+    /// Materialize a synthetic manifest with the target family patch applied.
+    pub fn to_manifest_for_target(
+        &self,
+        name: &str,
+        version: &str,
+        target: Option<&str>,
+    ) -> Manifest {
+        let platform = target.and_then(target_platform).or_else(host_platform);
+        let patch = platform.and_then(|key| self.platform.get(key));
+        let extend = |base: &[String], extra: Option<&Vec<String>>| {
+            let mut values = base.to_vec();
+            if let Some(extra) = extra {
+                values.extend(extra.iter().cloned());
+            }
+            values
+        };
         Manifest {
             package: Some(Package {
                 name: name.to_string(),
@@ -64,18 +131,62 @@ impl Recipe {
                 authors: Vec::new(),
                 toolchain: None,
                 target: None,
-                source_dir: self.source_dir.clone().unwrap_or_else(|| "src".to_string()),
-                include_dirs: self.include_dirs.clone(),
-                defines: self.defines.clone(),
-                libs: Vec::new(),
-                pkg_config: Vec::new(),
-                ignore_warnings: self.ignore_warnings,
-                kind: self.kind.clone(),
-                include: self.include.clone(),
-                exclude: self.exclude.clone(),
+                source_dir: patch
+                    .and_then(|p| p.source_dir.clone())
+                    .or_else(|| self.source_dir.clone())
+                    .unwrap_or_else(|| "src".to_string()),
+                include_dirs: extend(&self.include_dirs, patch.map(|p| &p.include_dirs)),
+                defines: extend(&self.defines, patch.map(|p| &p.defines)),
+                libs: extend(&self.libs, patch.map(|p| &p.libs)),
+                link_flags: extend(&self.link_flags, patch.map(|p| &p.link_flags)),
+                pkg_config: extend(&self.pkg_config, patch.map(|p| &p.pkg_config)),
+                generated_headers: {
+                    let mut headers = self.generated_headers.clone();
+                    if let Some(patch) = patch {
+                        headers.extend(patch.generated_headers.iter().cloned());
+                    }
+                    headers
+                },
+                generate: {
+                    let mut tasks = self.generate.clone();
+                    if let Some(patch) = patch {
+                        tasks.extend(patch.generate.iter().cloned());
+                    }
+                    tasks
+                },
+                ignore_warnings: self.ignore_warnings || patch.is_some_and(|p| p.ignore_warnings),
+                kind: patch
+                    .and_then(|p| p.kind.clone())
+                    .or_else(|| self.kind.clone()),
+                include: extend(&self.include, patch.map(|p| &p.include)),
+                exclude: extend(&self.exclude, patch.map(|p| &p.exclude)),
             }),
             ..Manifest::default()
         }
+    }
+}
+
+/// Collapse triples into stable recipe families. A native build uses the host
+/// family when no cross target was requested.
+fn target_platform(target: &str) -> Option<&'static str> {
+    let target = target.to_ascii_lowercase();
+    if target.contains("windows") {
+        Some("windows")
+    } else if target.contains("apple") || target.contains("darwin") || target.contains("macos") {
+        Some("macos")
+    } else if target.contains("linux") {
+        Some("linux")
+    } else {
+        None
+    }
+}
+
+fn host_platform() -> Option<&'static str> {
+    match std::env::consts::OS {
+        "linux" => Some("linux"),
+        "macos" => Some("macos"),
+        "windows" => Some("windows"),
+        _ => None,
     }
 }
 
@@ -159,13 +270,27 @@ impl PackageIndex {
         name: &str,
         version: &str,
     ) -> Result<Manifest> {
+        self.effective_manifest_for_target(cache_path, shorthand, git_url, name, version, None)
+    }
+
+    /// Target-aware counterpart used by the build pipeline after resolving the
+    /// root package's effective target.
+    pub fn effective_manifest_for_target(
+        &self,
+        cache_path: &Path,
+        shorthand: &str,
+        git_url: &str,
+        name: &str,
+        version: &str,
+        target: Option<&str>,
+    ) -> Result<Manifest> {
         let manifest_path = cache_path.join("cbld.toml");
         if manifest_path.is_file() {
             return Manifest::load(cache_path);
         }
         if let Some((_, recipe)) = self.find(shorthand, git_url) {
             if recipe.is_overlay() {
-                return Ok(recipe.to_manifest(name, version));
+                return Ok(recipe.to_manifest_for_target(name, version, target));
             }
         }
         Err(CbldError::NotCbldStandard {
@@ -263,6 +388,40 @@ mod tests {
         let gtest = idx.get("gh:google/googletest").expect("googletest recipe");
         assert_eq!(gtest.kind.as_deref(), Some("lib"));
         assert_eq!(gtest.include, vec!["googletest/src/gtest-all.cc"]);
+    }
+
+    #[test]
+    fn platform_patch_extends_native_recipe_for_the_selected_target() {
+        let idx = PackageIndex::parse(
+            r#"
+["gh:example/native"]
+git = "https://example.com/native.git"
+kind = "lib"
+source_dir = "common"
+include = ["base.c"]
+defines = ["BASE"]
+
+["gh:example/native".platform.linux]
+source_dir = "linux"
+include = ["linux.c"]
+defines = ["LINUX"]
+libs = ["dl"]
+link_flags = ["-Wl,--as-needed"]
+pkg_config = ["x11"]
+"#,
+            "test",
+        )
+        .unwrap();
+        let recipe = idx.get("gh:example/native").unwrap();
+        let manifest =
+            recipe.to_manifest_for_target("native", "1.0", Some("x86_64-unknown-linux-gnu"));
+        let package = manifest.package.unwrap();
+        assert_eq!(package.source_dir, "linux");
+        assert_eq!(package.include, vec!["base.c", "linux.c"]);
+        assert_eq!(package.defines, vec!["BASE", "LINUX"]);
+        assert_eq!(package.libs, vec!["dl"]);
+        assert_eq!(package.link_flags, vec!["-Wl,--as-needed"]);
+        assert_eq!(package.pkg_config, vec!["x11"]);
     }
 
     #[test]

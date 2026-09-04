@@ -72,20 +72,6 @@ pub fn collect_benchmark_sources(root: &Path) -> Result<Vec<PathBuf>> {
         )));
     }
 
-    let mut c_seen = false;
-    let mut cpp_seen = false;
-    for source in &sources {
-        match Language::from_extension(source) {
-            Some(Language::C) => c_seen = true,
-            Some(Language::Cpp) => cpp_seen = true,
-            None => {}
-        }
-    }
-    if c_seen && cpp_seen {
-        return Err(CbldError::LayoutViolation(
-            "benchmark suite mixes C and C++ sources".into(),
-        ));
-    }
     Ok(sources)
 }
 
@@ -203,13 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_benchmark_languages() {
+    fn accepts_mixed_benchmark_languages() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("bench")).unwrap();
         fs::write(root.join("bench/a.c"), "").unwrap();
         fs::write(root.join("bench/b.cpp"), "").unwrap();
-        assert!(collect_benchmark_sources(root).is_err());
+        assert_eq!(collect_benchmark_sources(root).unwrap().len(), 2);
     }
 
     #[test]

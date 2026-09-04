@@ -16,9 +16,14 @@ library cache until BMI artifacts can be cached safely.
 
 ## Dependencies
 
-`gh:owner/repo` maps to `https://github.com/owner/repo.git`. Overlay recipes (shipped in the binary, overridable via `~/.cbld/cbld-libs` from `cbld sync`) tell cbld how to treat an upstream tree that has no `cbld.toml`: `kind`, `source_dir`, `include`/`exclude`, `include_dirs`. The clone is never rewritten. If the clone has a `cbld.toml`, that file wins. The official list is on [Packages](/packages).
+`gh:owner/repo` maps to `https://github.com/owner/repo.git`. Overlay recipes (shipped in the binary, overridable via `~/.cbld/cbld-libs` from `cbld sync`) tell cbld how to treat an upstream tree that has no `cbld.toml`: `kind`, `source_dir`, `include`/`exclude`, `include_dirs`, `pkg_config`, and raw linker flags. Recipes may add `linux`, `macos`, and `windows` source/link patches selected from the effective target, and can materialize pinned recursive git submodules. The clone is never rewritten. If the clone has a `cbld.toml`, that file wins. The official list is on [Packages](/packages).
 
 `kind = "header"` exposes include paths only — no archive. Compiled `lib` dependencies are archived and linked into the consumer executable.
+
+Before compilation, a package may run declared generic generation tasks. The
+task engine handles write/copy/command operations, hashes their generated
+headers through the normal library cache, and keeps all outputs in `target/`.
+It has no package-specific tools or CMake/b2 adapter logic.
 
 Resolution walks each dependency's effective manifest (clone or overlay) and compiles transitives first. Versions are git tags; `cbld.lock` pins commit SHAs.
 
