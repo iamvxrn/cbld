@@ -169,3 +169,33 @@ html:not(.dark) .VPNavBar {
   line-height: 1.55;
   color: var(--vp-c-text-2);
 }
+
+/* Archived notice. VitePress offsets the fixed nav by --vp-layout-top-height,
+   so the height is declared there and matched below rather than left to the
+   content, which would slide the nav over the banner on a narrow screen. */
+:root {
+  --vp-layout-top-height: 40px;
+}
+
+.archived-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--vp-layout-top-height);
+  padding: 0 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  color: #2b2000;
+  background: #f2b705;
+}
+
+@media (max-width: 560px) {
+  :root {
+    --vp-layout-top-height: 56px;
+  }
+  .archived-banner {
+    font-size: 12px;
+  }
+}
